@@ -29,6 +29,7 @@ from database.requests import (
 )
 from bot.services.vpn_api import get_client_from_server_data, VPNAPIError, format_traffic
 from bot.utils.git_utils import check_for_updates
+from bot.utils.text import escape_html
 from bot.utils.update_block import is_update_blocked, get_blocked_message, try_unblock
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -586,7 +587,10 @@ async def check_and_notify_updates(bot: Bot) -> None:
             # Если есть блокирующий коммит — добавляем предупреждение
             if has_blocking and blocking_commit:
                 blocking_msg = blocking_commit['message'].lstrip('!')
-                notify_text += f"\n\n⚠️ Среди обновлений есть <b>блокирующий коммит</b>.\n<code>{blocking_msg}</code>"
+                notify_text += (
+                    f"\n\n⚠️ Среди обновлений есть <b>блокирующий коммит</b>.\n"
+                    f"<pre>{escape_html(blocking_msg)}</pre>"
+                )
             
             # Отправляем уведомления админам
             for admin_id in ADMIN_IDS:

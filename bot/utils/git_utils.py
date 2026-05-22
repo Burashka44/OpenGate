@@ -9,6 +9,8 @@ import sys
 import os
 from typing import Tuple, Optional, List, Dict
 
+from bot.utils.text import escape_html
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,7 +214,10 @@ def pull_to_commit(commit_hash: str) -> Tuple[bool, str]:
         
         commit_info = get_last_commit_info('HEAD')
         logger.info(f"✅ Успешно обновлено до блокирующего коммита {commit_hash[:8]}")
-        return True, f"✅ Обновление до блокирующего коммита завершено!\n\n🔹 Текущий коммит:\n<pre>{commit_info}</pre>"
+        return True, (
+            f"✅ Обновление до блокирующего коммита завершено!\n\n"
+            f"🔹 Текущий коммит:\n<pre>{escape_html(commit_info)}</pre>"
+        )
     except Exception as e:
         logger.error(f"Исключение в pull_to_commit({commit_hash}): {e}", exc_info=True)
         return False, f"❌ Критическая ошибка: {e}"
@@ -256,12 +261,12 @@ def check_for_updates() -> Tuple[bool, int, str, bool, Optional[Dict[str, str]],
     
     # Получаем лог новых коммитов
     success_log, log_output = run_git_command([
-        'log', '--format=%h %B', f'HEAD..origin/{branch}', '-n', '10'
+        'log', '--format=%h %s', f'HEAD..origin/{branch}', '-n', '10'
     ])
     
     log_text = f"📦 Доступно обновлений: {commits_behind}\n\n"
     if success_log and log_output:
-        log_text += "Последние изменения:\n<pre>" + log_output + "</pre>"
+        log_text += f"Последние изменения:\n<pre>{escape_html(log_output)}</pre>"
     
     return True, commits_behind, log_text, has_blocking, blocking_commit, is_beta_only
 
@@ -285,7 +290,9 @@ def pull_updates() -> Tuple[bool, str]:
         return False, f"❌ Ошибка обновления:\n{output}"
     
     commit_info = get_last_commit_info('HEAD')
-    return True, f"✅ Обновление успешно!\n\n🔹 Последний коммит:\n<pre>{commit_info}</pre>"
+    return True, (
+        f"✅ Обновление успешно!\n\n🔹 Последний коммит:\n<pre>{escape_html(commit_info)}</pre>"
+    )
 
 
 def force_pull_updates() -> Tuple[bool, str]:
@@ -314,7 +321,11 @@ def force_pull_updates() -> Tuple[bool, str]:
         return False, f"❌ Ошибка принудительного обновления:\n{output}"
         
     commit_info = get_last_commit_info('HEAD')
-    return True, f"✅ Принудительное обновление успешно завершено!\nВсе файлы перезаписаны из репозитория.\n\n🔹 Актуальный коммит:\n<pre>{commit_info}</pre>"
+    return True, (
+        f"✅ Принудительное обновление успешно завершено!\n"
+        f"Все файлы перезаписаны из репозитория.\n\n"
+        f"🔹 Актуальный коммит:\n<pre>{escape_html(commit_info)}</pre>"
+    )
 
 
 def get_last_commit_info(revision: str = 'HEAD') -> str:

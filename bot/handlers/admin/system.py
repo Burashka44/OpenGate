@@ -493,7 +493,7 @@ async def force_overwrite_confirmed(callback: CallbackQuery, state: FSMContext):
         await safe_edit_or_send(callback.message, 
             f"✅ <b>Обновлено до блокирующего коммита!</b>\n\n{message}\n\n"
             f"🚫 Среди обновлений найден <b>блокирующий коммит</b> <code>{blocking_hash}</code>:\n"
-            f"<code>\n{blocking_msg}\n</code>\n\n"
+            f"<pre>{escape_html(blocking_msg)}</pre>\n\n"
             "⚠️ После перезапуска выполните требуемые действия перед следующим обновлением.\n\n"
             "🔄 Перезапуск бота через 2 секунды..."
         )
