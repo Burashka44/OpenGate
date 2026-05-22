@@ -53,6 +53,15 @@ print_err() {
 }
 
 # Убрать CRLF в shell-скриптах (защита при клоне с Windows или старого кэша)
+# Текущая оболочка не должна оставаться в INSTALL_DIR перед rm/git clone
+safe_cd_away_from_install_dir() {
+    case "$PWD" in
+        "$INSTALL_DIR"|"$INSTALL_DIR"/*)
+            cd / 2>/dev/null || cd /opt 2>/dev/null || cd /tmp
+            ;;
+    esac
+}
+
 normalize_repo_files() {
     local dir="${1:-$INSTALL_DIR}"
     if [ ! -d "$dir" ]; then
@@ -234,6 +243,7 @@ do_install() {
             cp "$INSTALL_DIR/database/vpn_bot.db" /tmp/opengate_db_backup.db
             BACKUP_DB=1
         fi
+        safe_cd_away_from_install_dir
         rm -rf "$INSTALL_DIR"
     fi
 
@@ -246,8 +256,13 @@ do_install() {
 
     # Клонирование репозитория
     print_header "Загрузка OpenGate"
+    safe_cd_away_from_install_dir
+    if [ -d "$INSTALL_DIR" ]; then
+        print_err "Каталог $INSTALL_DIR всё ещё существует — удалите вручную: rm -rf $INSTALL_DIR"
+        return 1
+    fi
     git clone "$REPO_URL" "$INSTALL_DIR" -q
-    cd "$INSTALL_DIR"
+    cd "$INSTALL_DIR" || { print_err "Не удалось перейти в $INSTALL_DIR"; return 1; }
     normalize_repo_files "$INSTALL_DIR"
     print_ok "Репозиторий клонирован"
 
