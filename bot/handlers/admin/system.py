@@ -41,7 +41,7 @@ from bot.keyboards.admin import (
 
 logger = logging.getLogger(__name__)
 
-from bot.utils.text import safe_edit_or_send
+from bot.utils.text import safe_edit_or_send, escape_html
 from bot.utils.update_block import is_update_blocked, get_blocked_message, try_unblock, set_update_blocked
 
 router = Router()
@@ -271,10 +271,16 @@ async def show_update_confirm(callback: CallbackQuery, state: FSMContext):
     last_commit = get_last_commit_info(target_rev)
     previous_commits = get_previous_commits_info(5, target_rev)
     
-    # Формируем текст с коммитами
-    commits_text = f"🔹 <b>Последний коммит:</b>\n``<code>\n{last_commit}\n</code>``\n"
+    # Формируем текст с коммитами (Telegram HTML: <pre>, без лишних ``)
+    commits_text = (
+        f"🔹 <b>Последний коммит:</b>\n"
+        f"<pre>{escape_html(last_commit)}</pre>\n"
+    )
     if previous_commits != "Нет предыдущих коммитов":
-         commits_text += f"\n🔸 <b>Предыдущие 5 коммитов:</b>\n``<code>\n{previous_commits}\n</code>``"
+        commits_text += (
+            f"\n🔸 <b>Предыдущие коммиты:</b>\n"
+            f"<pre>{escape_html(previous_commits)}</pre>"
+        )
     
     # Сохраняем данные о блокирующем коммите в FSM state
     await state.update_data(
@@ -301,7 +307,7 @@ async def show_update_confirm(callback: CallbackQuery, state: FSMContext):
             f"📦 <b>Доступно обновлений:</b> {commits_behind}\n"
             f"Текущая версия: <code>{commit_hash}</code>\n\n"
             f"🚫 Среди обновлений найден <b>блокирующий коммит</b> <code>{blocking_hash}</code>:\n"
-            f"``<code>\n{blocking_msg}\n</code>``\n\n"
+            f"<pre>{escape_html(blocking_msg)}</pre>\n\n"
             f"Будет установлен <b>только этот коммит</b>. "
             f"После перезапуска вам потребуется выполнить требуемые действия, "
             f"прежде чем обновляться дальше.\n\n"

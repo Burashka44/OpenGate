@@ -320,7 +320,7 @@ def force_pull_updates() -> Tuple[bool, str]:
 def get_last_commit_info(revision: str = 'HEAD') -> str:
     """Получает информацию о последнем коммите."""
     success, output = run_git_command([
-        'log', '--format=%h %B', '-n', '1', revision
+        'log', '--format=%h %s', '-n', '1', revision
     ])
     if success and output:
         return output
@@ -330,7 +330,7 @@ def get_last_commit_info(revision: str = 'HEAD') -> str:
 def get_previous_commits_info(limit: int = 5, revision: str = 'HEAD') -> str:
     """Получает предыдущие коммиты, пропуская последний."""
     success, output = run_git_command([
-        'log', '--format=%h %B', '--skip=1', '-n', str(limit), revision
+        'log', '--format=%h %s', '--skip=1', '-n', str(limit), revision
     ])
     if success and output:
         return output
