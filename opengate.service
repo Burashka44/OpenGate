@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenGate VPN Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=opengate
+Group=opengate
+WorkingDirectory=/opt/OpenGate
+# Опционально: BOT_TOKEN и ADMIN_IDS из окружения (приоритет над config.py)
+# EnvironmentFile=-/opt/OpenGate/opengate.env
+ExecStart=/opt/OpenGate/venv/bin/python main.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

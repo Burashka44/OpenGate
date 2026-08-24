@@ -1,0 +1,31 @@
+services:
+  bot:
+    build: .
+    container_name: opengate-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+    ports:
+      # Веб: /sub + вебхуки (включается настройкой web_enabled=1 в админке /ops)
+      - "${WEB_PORT:-8081}:8081"
+    volumes:
+      # Сохраняем БД и логи между перезапусками
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ./backup:/app/backup
+    # Опционально: Redis FSM — раскомментируйте сервис redis и строку ниже
+    # depends_on:
+    #   - redis
+
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: opengate-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis_data:/data
+
+# volumes:
+#   redis_data:
