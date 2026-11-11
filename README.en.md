@@ -5,7 +5,7 @@
 <h1 align="center">OpenGate</h1>
 
 <p align="center">
-  <b>A turnkey Telegram bot for selling VPN access: payments, instant key delivery, admin panel, referrals and promo codes.</b>
+  <b>A turnkey Telegram bot for selling VPN access: 3x-UI &amp; LucX (subscription + mieru), payments, instant subscription delivery, admin panel, referrals and promo codes.</b>
 </p>
 
 <p align="center">
@@ -25,12 +25,13 @@
 ## What it is
 
 OpenGate turns a Telegram bot into a complete VPN subscription store. A customer picks a plan,
-pays with their preferred method and **receives a working key immediately** — no admin in the loop.
-The bot renews subscriptions, meters traffic, pays out referral rewards and keeps the VPN panel
-in sync.
+pays with their preferred method and **receives a subscription URL immediately** (3x-UI or LucX)
+— no admin in the loop. The bot renews expiry, meters traffic, pays out referral rewards and
+keeps the panel in sync.
 
-The bot is the **single source of truth** for expiry dates and traffic limits: panel state is
-reconciled to the database, never the other way around.
+Only **3x-UI / LucX** panels in subscription mode are supported. The bot is the **single source
+of truth** for expiry dates and traffic limits: panel state is reconciled to the database,
+never the other way around.
 
 ## Contents
 
@@ -58,8 +59,19 @@ reconciled to the database, never the other way around.
 
 ### VPN panels
 
-- **3x-UI** — purchase, renew, **subscription mode**: user gets the panel subscription URL
-- **LucX** — same API as 3x-UI; subscription also includes panel protocols (mieru, AWG, Hy2, …)
+OpenGate talks to the 3x-UI family in **subscription** mode: the customer gets one
+subscription URL, not a pile of raw keys.
+
+| Panel | Why pick it |
+| :--- | :--- |
+| **3x-UI** (`panel_type=xui`) | The classic stack: VLESS / Reality / Hysteria2 and a familiar subscription URL |
+| **LucX** (`panel_type=lucx`) | **Recommended.** Same API and the same bot flow — but the subscription can also carry **mieru**, AmneziaWG, NaiveProxy and other panel protocols next to Xray |
+
+With LucX, one refresh brings fallback protocols (including `mierus://`) when plain
+VLESS/Reality struggles with DPI. OpenGate uses LucX’s client-centric API and attaches
+inbounds to a single subscription.
+
+> Other panels (Marzban, etc.) are not supported.
 
 ### Sales and marketing
 

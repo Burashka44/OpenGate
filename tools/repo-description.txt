@@ -1,1 +1,1 @@
-Telegram-бот для продажи VPN: 3x-UI и Marzban, оплаты РФ, Stars, крипто, рефералка, триал. Python / aiogram 3.
+Магазин VPN в Telegram: 3x-UI и LucX (subscription + mieru/AWG), оплаты РФ/Stars/крипта, рефералка и промо. Python · aiogram 3

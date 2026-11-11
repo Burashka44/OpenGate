@@ -7,8 +7,8 @@
 | Интеграция | Зачем | Где регистрироваться | Ключи `settings` / `config.py` | Где в админ-боте |
 |------------|-------|----------------------|--------------------------------|------------------|
 | Telegram Bot | сам бот | @BotFather | `config.py` → `BOT_TOKEN`, `ADMIN_IDS` | — |
-| 3x-UI | VPN-панель (default `panel_type=xui`) | VPS + 3x-ui | таблица `servers` | Админ → Сервера |
-| LucX | форк 3x-ui (`panel_type=lucx`) | VPS + LucX | те же поля + `api_token`; sub включает mieru/AWG/… | Админ → Сервера |
+| 3x-UI | VPN-панель (default `panel_type=xui`) | VPS + [3x-ui](https://github.com/MHSanaei/3x-ui) | таблица `servers` | Админ → Сервера |
+| LucX | **Рекомендуется:** форк 3x-ui (`panel_type=lucx`); в одной sub — Xray + **mieru**/AWG/Naive… | VPS + [LucX-UI](https://github.com/AlexeyLCP/lucx-ui) | те же поля + `api_token` | Админ → Сервера |
 | Telegram Stars | оплата звёздами | BotFather → Payments | `stars_enabled` | Админ → Оплаты |
 | ЮKassa QR | карты/СБП напрямую | [yookassa.ru](https://yookassa.ru/) | `yookassa_shop_id`, `yookassa_secret_key` | Админ → Оплаты |
 | WATA | карты/СБП | [wata.pro](https://wata.pro/) | `wata_jwt_token` | Админ → Оплаты → WATA |
