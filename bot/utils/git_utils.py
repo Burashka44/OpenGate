@@ -271,6 +271,31 @@ def check_for_updates() -> Tuple[bool, int, str, bool, Optional[Dict[str, str]],
     return True, commits_behind, log_text, has_blocking, blocking_commit, is_beta_only
 
 
+def _assert_remote_allowlisted() -> Optional[str]:
+    """Проверяет, что origin совпадает с GITHUB_REPO_URL (если задан)."""
+    try:
+        from config import GITHUB_REPO_URL
+    except Exception:
+        return None
+    expected = (GITHUB_REPO_URL or "").strip()
+    if not expected:
+        return "❌ GITHUB_REPO_URL пуст — обновление из админки отключено."
+    current = get_remote_url() or ""
+    # Сравниваем без .git и без завершающего /
+    def _norm(u: str) -> str:
+        u = u.strip().rstrip("/")
+        if u.endswith(".git"):
+            u = u[:-4]
+        return u.lower()
+    if current and _norm(current) != _norm(expected):
+        return (
+            f"❌ Remote origin не совпадает с GITHUB_REPO_URL.\n"
+            f"origin: <code>{current}</code>\n"
+            f"config: <code>{expected}</code>"
+        )
+    return None
+
+
 def pull_updates() -> Tuple[bool, str]:
     """
     Выполняет git pull для обновления кода.
@@ -278,6 +303,10 @@ def pull_updates() -> Tuple[bool, str]:
     Returns:
         (success, message) - сообщение содержит информацию о коммите
     """
+    deny = _assert_remote_allowlisted()
+    if deny:
+        return False, deny
+
     success, status = run_git_command(['status', '--porcelain'])
     if success and status.strip():
         return False, "❌ Есть локальные изменения. Сделайте commit или stash перед обновлением."
@@ -302,10 +331,27 @@ def force_pull_updates() -> Tuple[bool, str]:
     Сама функция НЕ проверяет блокирующие коммиты — это ответственность вызывающего кода
     (обработчик в system.py проверяет блокирующие коммиты перед вызовом).
     Всегда обновляет до последней версии origin/branch.
+
+    Требует ALLOW_FORCE_GIT_RESET=1 — иначе отказ (защита от supply-chain RCE).
     
     Returns:
         (success, message)
     """
+    try:
+        from config import ALLOW_FORCE_GIT_RESET
+        if not ALLOW_FORCE_GIT_RESET:
+            return False, (
+                "❌ Force reset отключён.\n"
+                "Для включения: env <code>ALLOW_FORCE_GIT_RESET=1</code> "
+                "(опасно: произвольный код с remote)."
+            )
+    except Exception:
+        return False, "❌ Force reset отключён (config)."
+
+    deny = _assert_remote_allowlisted()
+    if deny:
+        return False, deny
+
     # Скачиваем все изменения
     success, output = run_git_command(['fetch', 'origin'], timeout=120)
     if not success:

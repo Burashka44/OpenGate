@@ -179,15 +179,22 @@ async def create_backup_archive() -> Optional[bytes]:
     Returns:
         Байты ZIP-архива или None при ошибке
     """
+    import tempfile
+    from database.connection import backup_database
+
+    tmp_db = None
     try:
         archive_buffer = BytesIO()
         
         with zipfile.ZipFile(archive_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Добавляем базу данных бота
+            # Консистентный снимок бот-БД (WAL-safe)
             bot_db_path = os.path.abspath(BOT_DB_PATH)
             if os.path.exists(bot_db_path):
-                zf.write(bot_db_path, 'vpn_bot.db')
-                logger.info(f"Добавлен в архив: vpn_bot.db ({os.path.getsize(bot_db_path)} байт)")
+                fd, tmp_db = tempfile.mkstemp(suffix='.db')
+                os.close(fd)
+                backup_database(tmp_db, bot_db_path)
+                zf.write(tmp_db, 'vpn_bot.db')
+                logger.info(f"Добавлен в архив: vpn_bot.db ({os.path.getsize(tmp_db)} байт)")
             else:
                 logger.warning(f"База данных бота не найдена: {bot_db_path}")
             
@@ -219,6 +226,12 @@ async def create_backup_archive() -> Optional[bytes]:
     except Exception as e:
         logger.error(f"Ошибка при создании архива бэкапов: {e}")
         return None
+    finally:
+        if tmp_db and os.path.exists(tmp_db):
+            try:
+                os.unlink(tmp_db)
+            except OSError:
+                pass
 
 
 async def save_local_backup() -> None:
@@ -228,21 +241,19 @@ async def save_local_backup() -> None:
     Файлы хранятся неархивированными (.db) для прямого доступа
     через sqlite3 из Python без необходимости распаковки.
     """
+    from database.connection import backup_database
+
     today = datetime.now().strftime("%Y-%m-%d")
     day_dir = os.path.join(BACKUP_DIR, today)
     
     try:
         os.makedirs(day_dir, exist_ok=True)
         
-        # Сохраняем базу данных бота (+ WAL/SHM) и проверяем integrity
+        # Консистентный онлайн-бэкап через sqlite3.backup API
         bot_db_path = os.path.abspath(BOT_DB_PATH)
         if os.path.exists(bot_db_path):
             dest = os.path.join(day_dir, 'vpn_bot.db')
-            shutil.copy2(bot_db_path, dest)
-            for suffix in ('-wal', '-shm'):
-                side = bot_db_path + suffix
-                if os.path.exists(side):
-                    shutil.copy2(side, dest + suffix)
+            backup_database(dest, bot_db_path)
             logger.info(f"Локальный бэкап: vpn_bot.db ({os.path.getsize(dest)} байт)")
             try:
                 import sqlite3

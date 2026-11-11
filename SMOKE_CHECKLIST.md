@@ -1,8 +1,8 @@
 # OpenGate — smoke checklist
 
-## XUI (обязательно после каждой фазы)
+## 3x-UI / LucX (обязательно после каждой фазы)
 
-- [ ] Купить тариф без промо
+- [ ] Купить тариф без промо → пользователь получает **subscription URL**
 - [ ] Купить с percent-промо (сумма в ордере = скидочная)
 - [ ] Продлить ключ
 - [ ] Полная оплата балансом
@@ -10,19 +10,9 @@
 - [ ] Webhook: `webhook_postpay_v2=0` и `=1` (без двойной рефералки)
 - [ ] `/sub` / subscription sync / traffic push
 - [ ] Maintenance: buy и renew блокируются; trial нет; `/maintenance on` не снимается healthcheck
-
-## Marzban (mock / staging)
-
-- [ ] `panel_type=marzban`, успешный test перед save
-- [ ] Создание пользователя без inbound-select
-- [ ] `subscription_url` в ответе / push expire+data_limit
-
-## Naive / mieru (dry-run)
-
-- [ ] Naive: Caddy Admin upsert или SSH users.conf merge + reload
-- [ ] mieru: partial users JSON + `mita apply` (не wipe), backup `.bak`
-- [ ] Ссылки `naive+https://…` / `mieru://…`
-- [ ] Expiry disable/remove из бота
+- [ ] `panel_type=xui`: в подписке только протоколы 3x (VLESS/Hy2/…)
+- [ ] `panel_type=lucx`: в подписке также mieru/AWG/… (что настроено на панели)
+- [ ] LucX: клиент создаётся через `/panel/api/clients/add` + attach ко всем inbound
 
 ## Feature flags
 

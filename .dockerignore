@@ -10,10 +10,12 @@ __pycache__
 .agents
 AGENTS.md
 logs
+*.log
 backup
 database/*.db
 database/*.db-*
 .env
+opengate.env
 config.py
 *.md
 !README.MD

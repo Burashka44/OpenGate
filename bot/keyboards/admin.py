@@ -30,6 +30,7 @@ __all__ = [
     'servers_list_kb',
     'server_view_kb',
     'server_groups_kb',
+    'panel_type_select_kb',
     'add_server_step_kb',
     'add_server_confirm_kb',
     'add_server_test_failed_kb',

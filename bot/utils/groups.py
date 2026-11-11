@@ -76,11 +76,8 @@ def get_servers_for_key(key_tariff_id: int):
     При >1 группе — только серверы из группы тарифа.
     При 1 группе — все активные серверы.
 
-    Фильтр protocol_family: только если тариф явно naive/mieru.
-    Default xray → xui|marzban (включая серверы без заполненного panel_type).
+    Поддерживаются только 3x-UI / LucX (`xui` | `lucx`; пустой panel_type = xui).
     """
-    from database.requests import get_tariff_by_id
-
     groups_count = get_groups_count()
 
     if groups_count <= 1:
@@ -89,12 +86,7 @@ def get_servers_for_key(key_tariff_id: int):
         group_id = get_tariff_group_id(key_tariff_id)
         servers = get_active_servers_by_group(group_id)
 
-    tariff = get_tariff_by_id(key_tariff_id) if key_tariff_id else None
-    family = ((tariff or {}).get('protocol_family') or 'xray').strip().lower()
-    if family in ('naive', 'mieru'):
-        return [s for s in servers if (s.get('panel_type') or '').strip().lower() == family]
-    # xray (default): xui + marzban; серверы без panel_type считаем xui
     return [
         s for s in servers
-        if (s.get('panel_type') or 'xui').strip().lower() in ('xui', 'marzban', '')
+        if (s.get('panel_type') or 'xui').strip().lower() in ('xui', 'lucx', '')
     ]

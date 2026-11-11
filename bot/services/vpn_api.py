@@ -9,9 +9,6 @@ import asyncio
 
 from .panels.base import VPNAPIError, BaseVPNClient
 from .panels.xui import XUIClient
-from .panels.marzban import MarzbanClient
-from .panels.naive import NaiveClient
-from .panels.mieru import MieruClient
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +17,9 @@ _clients: Dict[int, BaseVPNClient] = {}
 # Per-key locks для ensure_subscription_keys_on_server (защита от гонок)
 _ensure_locks: Dict[int, asyncio.Lock] = {}
 
-
-KNOWN_PANEL_TYPES = frozenset({'xui', 'marzban', 'naive', 'mieru'})
+# xui = обычная 3x-UI; lucx = LucX (форк 3x с mieru/AWG/…). Оба через XUIClient.
+KNOWN_PANEL_TYPES = frozenset({'xui', 'lucx'})
+XUI_FAMILY = frozenset({'xui', 'lucx'})
 
 
 def get_bot_mode() -> str:
@@ -64,14 +62,8 @@ def get_client_from_server_data(server: Dict[str, Any]) -> BaseVPNClient:
     if panel_type not in KNOWN_PANEL_TYPES:
         raise VPNAPIError(f"Неизвестный panel_type={panel_type!r} для сервера {server_id}")
 
-    if panel_type == 'marzban':
-        client: BaseVPNClient = MarzbanClient(server)
-    elif panel_type == 'naive':
-        client = NaiveClient(server)
-    elif panel_type == 'mieru':
-        client = MieruClient(server)
-    else:
-        client = XUIClient(server)
+    # 3x-UI и LucX — один HTTP API; LucX отличается содержимым подписки (mieru/AWG/…).
+    client: BaseVPNClient = XUIClient(server)
 
     _clients[server_id] = client
     return client
@@ -85,6 +77,17 @@ def invalidate_client_cache(server_id: int):
         asyncio.create_task(client.close())
         del _clients[server_id]
         logger.debug(f'Кэш клиента {server_id} очищен')
+
+
+def prune_vpn_caches(max_ensure_locks: int = 2000) -> None:
+    """Ограничивает рост _ensure_locks (не трогает залоченные)."""
+    if len(_ensure_locks) <= max_ensure_locks:
+        return
+    # Удаляем незанятые lock'и сверх лимита
+    removable = [kid for kid, lock in _ensure_locks.items() if not lock.locked()]
+    overflow = len(_ensure_locks) - max_ensure_locks
+    for kid in removable[:overflow]:
+        _ensure_locks.pop(kid, None)
 
 
 def format_traffic(bytes_count: int) -> str:
@@ -311,11 +314,10 @@ async def push_key_to_panel(key_id: int, reset_traffic: bool = False) -> bool:
     client_uuid = key.get('client_uuid')
     panel_type = (key.get('panel_type') or 'xui').strip().lower() or 'xui'
 
-    # Marzban/naive/mieru: inbound_id может быть 0
     if not email or not client_uuid:
         logger.warning(f'push_key_to_panel: ключ {key_id} — неполные данные панели')
         return False
-    if panel_type == 'xui' and not inbound_id:
+    if panel_type in XUI_FAMILY and not inbound_id:
         logger.warning(f'push_key_to_panel: ключ {key_id} — неполные данные панели')
         return False
     
@@ -500,8 +502,7 @@ async def ensure_subscription_keys_on_server(key_id: int) -> Dict[str, int]:
             return stats
 
         panel_type = (key.get('panel_type') or 'xui').strip().lower() or 'xui'
-        # XUI-путь без изменения семантики; non-xui — early return
-        if panel_type != 'xui':
+        if panel_type not in XUI_FAMILY:
             logger.debug(
                 f"ensure_subscription: early-return for panel_type={panel_type} key={key_id}"
             )
@@ -517,7 +518,7 @@ async def ensure_subscription_keys_on_server(key_id: int) -> Dict[str, int]:
             'password': key.get('password'),
             'protocol': key.get('protocol', 'https'),
             'api_token': key.get('api_token'),
-            'panel_type': 'xui',
+            'panel_type': panel_type,
         }
 
         try:
@@ -563,51 +564,88 @@ async def ensure_subscription_keys_on_server(key_id: int) -> Dict[str, int]:
             from datetime import datetime, timezone
             traffic_limit = key.get('traffic_limit', 0) or 0
             total_gb = int(traffic_limit / (1024 ** 3)) if traffic_limit > 0 else 0
+            total_bytes = traffic_limit if traffic_limit > 0 else 0
 
             expires_at = key.get('expires_at')
+            expiry_ms = 0
             if expires_at:
                 try:
                     dt = datetime.fromisoformat(str(expires_at).replace('Z', '+00:00'))
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
+                    expiry_ms = int(dt.timestamp() * 1000)
                     delta = dt - datetime.now(timezone.utc)
                     days_left = max(1, int(delta.total_seconds() / 86400) + (1 if delta.seconds else 0))
                 except Exception:
                     days_left = 30
+                    expiry_ms = 0
             else:
                 days_left = 0
 
             active = is_key_active(key) and not is_traffic_exhausted(key)
 
-            # Создаём в отсутствующих inbound
-            missing = [inb for inb in inbounds if inb['id'] not in presence]
-            for inb in missing:
+            # LucX: один клиент панели + attach ко всем inbound (mieru/AWG/Hy2/…).
+            # Обычная 3x: классический addClient в каждый inbound.
+            if panel_type == 'lucx' and hasattr(client, 'ensure_lucx_client'):
+                inbound_ids = [inb['id'] for inb in inbounds if inb.get('id') is not None]
                 try:
-                    flow = await client.get_inbound_flow(inb['id'])
-                    res = await client.add_client(
-                        inbound_id=inb['id'],
+                    res = await client.ensure_lucx_client(
                         email=email,
-                        total_gb=total_gb,
-                        expire_days=days_left if days_left > 0 else 365,
-                        limit_ip=1,
+                        inbound_ids=inbound_ids,
+                        sub_id=sub_id,
+                        expiry_time_ms=expiry_ms,
+                        total_gb_bytes=total_bytes,
                         enable=active,
                         tg_id=str(key.get('telegram_id') or ''),
-                        flow=flow,
-                        sub_id=sub_id,
+                        limit_ip=1,
                     )
-                    stats['created'] += 1
-                    presence[inb['id']] = {
-                        'email': email,
-                        'id': res['uuid'],
-                        'password': res['uuid'],
-                        'subId': sub_id,
-                        'enable': active,
-                    }
+                    if res.get('created'):
+                        stats['created'] += 1
+                    # presence обновляем по всем inbound — для записи panel_inbound_id
+                    for iid in inbound_ids:
+                        presence.setdefault(iid, {
+                            'email': email,
+                            'id': res.get('uuid') or '',
+                            'password': res.get('uuid') or '',
+                            'subId': res.get('sub_id') or sub_id,
+                            'enable': active,
+                        })
                 except Exception as e:
-                    logger.warning(
-                        f"ensure_subscription_keys: не удалось создать клиента {email} "
-                        f"в inbound {inb['id']} сервера {server_id}: {e}"
+                    logger.error(
+                        f"ensure_subscription_keys: LucX ensure_lucx_client({email}) "
+                        f"на сервере {server_id} не удался: {e}"
                     )
+                    if not presence:
+                        raise
+            else:
+                missing = [inb for inb in inbounds if inb['id'] not in presence]
+                for inb in missing:
+                    try:
+                        flow = await client.get_inbound_flow(inb['id'])
+                        res = await client.add_client(
+                            inbound_id=inb['id'],
+                            email=email,
+                            total_gb=total_gb,
+                            expire_days=days_left if days_left > 0 else 365,
+                            limit_ip=1,
+                            enable=active,
+                            tg_id=str(key.get('telegram_id') or ''),
+                            flow=flow,
+                            sub_id=sub_id,
+                        )
+                        stats['created'] += 1
+                        presence[inb['id']] = {
+                            'email': email,
+                            'id': res['uuid'],
+                            'password': res['uuid'],
+                            'subId': sub_id,
+                            'enable': active,
+                        }
+                    except Exception as e:
+                        logger.warning(
+                            f"ensure_subscription_keys: не удалось создать клиента {email} "
+                            f"в inbound {inb['id']} сервера {server_id}: {e}"
+                        )
 
             # Обновляем panel_inbound_id/client_uuid на МИНИМАЛЬНЫЙ присутствующий inbound
             if presence:
@@ -724,4 +762,5 @@ __all__ = [
     "push_key_to_panel", "restore_traffic_limit_in_db",
     "get_bot_mode", "is_subscription_mode",
     "ensure_subscription_keys_on_server", "get_subscription_url_for_key",
+    "KNOWN_PANEL_TYPES", "XUI_FAMILY",
 ]

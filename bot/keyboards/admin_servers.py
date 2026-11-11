@@ -82,12 +82,24 @@ def server_groups_kb(server_id: int, all_groups: List[Dict[str, Any]], selected_
     builder.row(back_button(f'admin_server_view:{server_id}'))
     return builder.as_markup()
 
-def add_server_step_kb(step: int, total_steps: int=6) -> InlineKeyboardMarkup:
+def panel_type_select_kb() -> InlineKeyboardMarkup:
+    """Выбор типа панели кнопками — шаг добавления сервера."""
+    from bot.states.admin_states import PANEL_TYPE_CHOICES
+    builder = InlineKeyboardBuilder()
+    for value, label in PANEL_TYPE_CHOICES:
+        builder.row(InlineKeyboardButton(
+            text=label, callback_data=f'server_panel_type:{value}'
+        ))
+    builder.row(InlineKeyboardButton(text='❌ Отмена', callback_data='admin_servers'))
+    return builder.as_markup()
+
+
+def add_server_step_kb(step: int, total_steps: int = 5) -> InlineKeyboardMarkup:
     """
     Клавиатура для шага добавления сервера.
     
     Args:
-        step: Текущий шаг (1-6)
+        step: Текущий шаг (1-5)
         total_steps: Общее количество шагов
     """
     builder = InlineKeyboardBuilder()
@@ -113,12 +125,12 @@ def add_server_test_failed_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_server_add_back'), InlineKeyboardButton(text='❌ Отмена', callback_data='admin_servers'))
     return builder.as_markup()
 
-def edit_server_kb(current_param: int, total_params: int=6) -> InlineKeyboardMarkup:
+def edit_server_kb(current_param: int, total_params: int = 5) -> InlineKeyboardMarkup:
     """
     Клавиатура редактирования сервера с навигацией.
     
     Args:
-        current_param: Индекс текущего параметра (0-5)
+        current_param: Индекс текущего параметра (0-4)
         total_params: Общее количество параметров
     """
     builder = InlineKeyboardBuilder()

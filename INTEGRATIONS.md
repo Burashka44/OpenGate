@@ -8,9 +8,7 @@
 |------------|-------|----------------------|--------------------------------|------------------|
 | Telegram Bot | сам бот | @BotFather | `config.py` → `BOT_TOKEN`, `ADMIN_IDS` | — |
 | 3x-UI | VPN-панель (default `panel_type=xui`) | VPS + 3x-ui | таблица `servers` | Админ → Сервера |
-| Marzban | VPN-панель (`panel_type=marzban`) | VPS + Marzban | `servers` + JWT login | Админ → Сервера |
-| Naive | NaiveProxy (`panel_type=naive`) | Caddy + Naive | `public_host`, `extra_config.caddy_admin_url` или SSH | Админ → Сервера |
-| mieru | mieru/mita (`panel_type=mieru`) | mita | `extra_config` apply/reload, merge-only | Админ → Сервера |
+| LucX | форк 3x-ui (`panel_type=lucx`) | VPS + LucX | те же поля + `api_token`; sub включает mieru/AWG/… | Админ → Сервера |
 | Telegram Stars | оплата звёздами | BotFather → Payments | `stars_enabled` | Админ → Оплаты |
 | ЮKassa QR | карты/СБП напрямую | [yookassa.ru](https://yookassa.ru/) | `yookassa_shop_id`, `yookassa_secret_key` | Админ → Оплаты |
 | WATA | карты/СБП | [wata.pro](https://wata.pro/) | `wata_jwt_token` | Админ → Оплаты → WATA |
@@ -52,8 +50,8 @@
 
 1. Создать бота в @BotFather, записать `BOT_TOKEN` и свой ID в `ADMIN_IDS`.
 2. Развернуть на VPS: `sudo bash install.sh` (см. README) или ручная установка из ADMIN_GUIDE.
-3. Добавить VPN-сервер в админке → Сервера (`panel_type`: `xui` / `marzban` / `naive` / `mieru`). Тест подключения обязателен перед save.
-4. Создать тарифы; для naive/mieru задать `protocol_family` соответственно (xray по умолчанию → xui+marzban).
+3. Добавить VPN-сервер в админке → Сервера (`panel_type`: `xui` или `lucx`). Тест подключения обязателен перед save.
+4. Создать тарифы; бот работает в режиме subscription — пользователь получает URL подписки панели.
 5. Включить нужные способы оплаты и заполнить ключи по таблице выше.
 6. Настроить `support_channel_link` и кнопки help (новости/поддержка).
 7. Заполнить `project_support_*`, если нужен экран доната.

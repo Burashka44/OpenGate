@@ -40,6 +40,7 @@ from bot.services.vpn_api import (
 from bot.states.admin_states import (
     AdminStates,
     SERVER_PARAMS,
+    PANEL_TYPE_CHOICES,
     get_param_by_index,
     get_total_params
 )
@@ -47,6 +48,7 @@ from bot.keyboards.admin import (
     servers_list_kb,
     server_view_kb,
     server_groups_kb,
+    panel_type_select_kb,
     add_server_step_kb,
     add_server_confirm_kb,
     add_server_test_failed_kb,
@@ -55,6 +57,8 @@ from bot.keyboards.admin import (
     back_and_home_kb,
     group_select_kb
 )
+
+PANEL_TYPE_LABELS = dict(PANEL_TYPE_CHOICES)
 
 logger = logging.getLogger(__name__)
 
@@ -252,15 +256,13 @@ async def show_server_view(callback: CallbackQuery, state: FSMContext):
 # ДОБАВЛЕНИЕ СЕРВЕРА
 # ============================================================================
 
-# Состояния добавления в порядке
+# Состояния добавления в порядке (panel_type выбирается кнопками)
 ADD_STATES = [
     AdminStates.add_server_name,
     AdminStates.add_server_panel_type,
     AdminStates.add_server_url,
     AdminStates.add_server_login,
     AdminStates.add_server_password,
-    AdminStates.add_server_public_host,
-    AdminStates.add_server_extra_config,
 ]
 
 
@@ -275,6 +277,8 @@ def get_add_step_text(step: int, data: dict) -> str:
     for i in range(step - 1):
         p = get_param_by_index(i)
         value = data.get(p['key'], '—')
+        if p['key'] == 'panel_type':
+            value = PANEL_TYPE_LABELS.get(str(value), value)
         # Маскируем пароль
         if p['key'] == 'password':
             value = "•" * min(len(str(value)), 8)
@@ -282,11 +286,24 @@ def get_add_step_text(step: int, data: dict) -> str:
     
     if step > 1:
         lines.append("")
-    
-    lines.append(f"Введите <b>{param['label'].lower()}</b>:")
-    lines.append(f"_({param['hint']})_")
+
+    if param['key'] == 'panel_type':
+        lines.append("Выберите <b>тип панели</b>:")
+        lines.append("_(3x-UI — подписка xray; LucX — та же подписка + mieru/AWG/…)_")
+    else:
+        lines.append(f"Введите <b>{param['label'].lower()}</b>:")
+        lines.append(f"_({param['hint']})_")
     
     return "\n".join(lines)
+
+
+async def render_panel_type_step(message, state: FSMContext, prefix: str = ""):
+    """Шаг выбора типа панели кнопками."""
+    data = await state.get_data()
+    step = data.get('add_step', 2)
+    await state.set_state(AdminStates.add_server_panel_type)
+    text = (prefix + get_add_step_text(step, data.get('server_data', {}))).strip()
+    await safe_edit_or_send(message, text, reply_markup=panel_type_select_kb())
 
 
 @router.callback_query(F.data == "admin_server_add")
@@ -360,14 +377,46 @@ async def add_server_back(callback: CallbackQuery, state: FSMContext):
     
     # На шаг назад
     new_step = current_step - 1
-    await state.set_state(ADD_STATES[new_step - 1])
     await state.update_data(add_step=new_step)
-    
+    param = get_param_by_index(new_step - 1)
+    if param['key'] == 'panel_type':
+        await render_panel_type_step(callback.message, state)
+        await callback.answer()
+        return
+
+    await state.set_state(ADD_STATES[new_step - 1])
     text = get_add_step_text(new_step, data.get('server_data', {}))
     
     await safe_edit_or_send(callback.message, 
         text,
         reply_markup=add_server_step_kb(new_step)
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminStates.add_server_panel_type, F.data.startswith("server_panel_type:"))
+async def server_panel_type_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбор типа панели кнопкой."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    panel_type = callback.data.split(":", 1)[1].strip().lower()
+    if panel_type not in PANEL_TYPE_LABELS:
+        await callback.answer("Неизвестный тип панели", show_alert=True)
+        return
+
+    data = await state.get_data()
+    server_data = data.get('server_data', {})
+    server_data['panel_type'] = panel_type
+    current_step = data.get('add_step', 2)
+    new_step = current_step + 1
+    await state.update_data(server_data=server_data, add_step=new_step)
+    await state.set_state(ADD_STATES[new_step - 1])
+
+    text = get_add_step_text(new_step, server_data)
+    await safe_edit_or_send(
+        callback.message, text, reply_markup=add_server_step_kb(new_step)
     )
     await callback.answer()
 
@@ -431,10 +480,6 @@ async def process_add_step(message: Message, state: FSMContext):
 
         if param['key'] == 'panel_type':
             value = value.strip().lower()
-        if param['key'] in ('public_host', 'extra_config') and value.strip() == '-':
-            value = ''
-        if param['key'] == 'extra_config' and value.strip() == '':
-            value = '{}'
 
         # Сохраняем значение
         server_data[param['key']] = value
@@ -444,23 +489,25 @@ async def process_add_step(message: Message, state: FSMContext):
     # Удаляем сообщение пользователя (опционально)
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
     
     # Переход к следующему шагу или подтверждению
     if current_step < get_total_params():
         new_step = current_step + 1
-        await state.set_state(ADD_STATES[new_step - 1])
         await state.update_data(add_step=new_step)
-        
+        next_param = get_param_by_index(new_step - 1)
+        if next_param['key'] == 'panel_type':
+            await render_panel_type_step(message, state)
+            return
+
+        await state.set_state(ADD_STATES[new_step - 1])
         text = get_add_step_text(new_step, server_data)
-        
-        # Редактируем предыдущее сообщение бота
-        # Для этого сохраняем message_id
-        bot_message = await safe_edit_or_send(message,
+        await safe_edit_or_send(
+            message,
             text,
             reply_markup=add_server_step_kb(new_step),
-            force_new=True
+            force_new=True,
         )
     else:
         # Все данные введены — проверяем подключение
@@ -503,14 +550,11 @@ async def process_add_step(message: Message, state: FSMContext):
         await safe_edit_or_send(message, text, reply_markup=kb, force_new=True)
 
 
-# Хендлеры для каждого состояния добавления
+# Хендлеры для текстовых шагов добавления (тип панели — только кнопки)
 @router.message(AdminStates.add_server_name)
-@router.message(AdminStates.add_server_panel_type)
 @router.message(AdminStates.add_server_url)
 @router.message(AdminStates.add_server_login)
 @router.message(AdminStates.add_server_password)
-@router.message(AdminStates.add_server_public_host)
-@router.message(AdminStates.add_server_extra_config)
 async def add_server_step_handler(message: Message, state: FSMContext):
     await process_add_step(message, state)
 

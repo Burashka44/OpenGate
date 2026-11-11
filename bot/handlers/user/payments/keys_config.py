@@ -80,7 +80,7 @@ async def process_new_key_server_selection(callback: CallbackQuery, state: FSMCo
 
     try:
         client = await get_client(server_id)
-        # Marzban/Naive/mieru: без inbound UX (и в subscription mode)
+        # Панели без inbound UX (и в subscription mode)
         if not getattr(client, 'supports_inbound_select', True):
             await process_new_key_final(callback, state, server_id, 0)
             return

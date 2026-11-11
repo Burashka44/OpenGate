@@ -345,11 +345,20 @@ async def update_bot_confirmed(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ Доступ запрещён", show_alert=True)
         return
     
-    # Проверяем и обновляем remote URL если нужно
+    # Remote должен уже совпадать с GITHUB_REPO_URL (не переписываем молча).
     current_remote = get_remote_url()
-    if current_remote != GITHUB_REPO_URL:
-        set_remote_url(GITHUB_REPO_URL)
-    
+    if GITHUB_REPO_URL and current_remote and current_remote.rstrip("/").removesuffix(".git") != GITHUB_REPO_URL.rstrip("/").removesuffix(".git"):
+        await safe_edit_or_send(
+            callback.message,
+            "❌ <b>Remote не совпадает с GITHUB_REPO_URL</b>\n\n"
+            f"origin: <code>{current_remote}</code>\n"
+            f"config: <code>{GITHUB_REPO_URL}</code>\n\n"
+            "Исправьте remote вручную на сервере.",
+            reply_markup=back_and_home_kb("admin_bot_settings"),
+        )
+        await callback.answer()
+        return
+
     # Получаем данные о блокирующем коммите из FSM state
     data = await state.get_data()
     has_blocking = data.get('has_blocking', False)
@@ -437,6 +446,18 @@ async def show_force_overwrite(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
         
+    from config import ALLOW_FORCE_GIT_RESET
+    if not ALLOW_FORCE_GIT_RESET:
+        await safe_edit_or_send(
+            callback.message,
+            "❌ <b>Force reset отключён</b>\n\n"
+            "Для включения задайте env <code>ALLOW_FORCE_GIT_RESET=1</code>.\n"
+            "Это опасно: remote может выполнить произвольный код.",
+            reply_markup=back_and_home_kb("admin_bot_settings"),
+        )
+        await callback.answer()
+        return
+
     await safe_edit_or_send(callback.message, 
         "⚠️ <b>ПРИНУДИТЕЛЬНАЯ ПЕРЕЗАПИСЬ</b>\n\n"
         f"Все файлы бота (кроме конфигурации и баз данных) будут перезаписаны оригинальными файлами из репозитория:\n<code>{GITHUB_REPO_URL}</code>\n\n"
@@ -453,11 +474,6 @@ async def force_overwrite_confirmed(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещён", show_alert=True)
         return
-    
-    # Проверяем и обновляем remote URL если нужно
-    current_remote = get_remote_url()
-    if current_remote != GITHUB_REPO_URL and GITHUB_REPO_URL:
-        set_remote_url(GITHUB_REPO_URL)
     
     await safe_edit_or_send(callback.message, 
         "🔄 <b>Принудительная перезапись...</b>\n\n"

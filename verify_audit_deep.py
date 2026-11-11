@@ -102,16 +102,17 @@ with get_db() as conn:
         tid = row["id"]
         servers = get_servers_for_key(tid)
         ok(f"get_servers_for_key({tid}) -> {len(servers)} servers")
-        # temporarily set naive and ensure filter
-        old = conn.execute("SELECT protocol_family FROM tariffs WHERE id=?", (tid,)).fetchone()["protocol_family"]
-        conn.execute("UPDATE tariffs SET protocol_family='naive' WHERE id=?", (tid,))
+        # xui/lucx-only: get_servers_for_key не должен отдавать чужие panel_type
         filtered = get_servers_for_key(tid)
-        only_naive = all((s.get("panel_type") or "").lower() == "naive" for s in filtered)
-        if only_naive or len(filtered) == 0:
-            ok(f"naive filter -> {len(filtered)} (only naive or empty)")
+        bad_types = [
+            (s.get("panel_type") or "").lower()
+            for s in filtered
+            if (s.get("panel_type") or "xui").strip().lower() not in ('xui', 'lucx', '')
+        ]
+        if not bad_types:
+            ok(f"xui/lucx filter -> {len(filtered)} servers")
         else:
-            bad("naive filter leaked non-naive", filtered)
-        conn.execute("UPDATE tariffs SET protocol_family=? WHERE id=?", (old or "xray", tid))
+            bad("xui/lucx filter leaked other panel_type", bad_types)
     else:
         ok("no tariffs in DB — skip filter live test")
 

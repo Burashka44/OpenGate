@@ -22,10 +22,30 @@ set -e
 
 INSTALL_DIR="/opt/OpenGate"
 REPO_URL="https://github.com/Burashka44/OpenGate.git"
+# Приватный HTTPS-репозиторий: export GITHUB_TOKEN=ghp_... перед install/update
+# (или используйте SSH URL: git@github.com:ORG/OpenGate.git + ключ на сервере)
 RUN_USER="opengate"
 VENV_DIR="$INSTALL_DIR/venv"
 SERVICE_NAME="opengate"
 SERVICE_FILE="opengate.service"
+
+# URL для git clone/fetch: публичный без изменений; при GITHUB_TOKEN — token в HTTPS.
+# SSH (git@...) не трогаем. Токен в логах/echo не печатаем.
+resolve_repo_url() {
+    local url="${1:-$REPO_URL}"
+    case "$url" in
+        git@*|ssh://*)
+            printf '%s' "$url"
+            return 0
+            ;;
+    esac
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        # https://github.com/org/repo.git → https://x-access-token:TOKEN@github.com/org/repo.git
+        printf '%s' "$url" | sed -E "s#https://([^@]+@)?#https://x-access-token:${GITHUB_TOKEN}@#"
+        return 0
+    fi
+    printf '%s' "$url"
+}
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -67,7 +87,11 @@ normalize_repo_files() {
     if [ ! -d "$dir" ]; then
         return 0
     fi
-    find "$dir" -type f \( -name '*.sh' -o -name '*.service' \) -print0 2>/dev/null \
+    find "$dir" -type f \( \
+            -name '*.sh' -o -name '*.service' -o -name 'Dockerfile' -o -name 'Dockerfile.*' \
+            -o -name 'docker-compose.yml' -o -name 'docker-compose.yaml' \
+            -o -name '.gitattributes' -o -name '.editorconfig' \
+        \) -print0 2>/dev/null \
         | while IFS= read -r -d '' f; do
             sed -i 's/\r$//' "$f"
         done
@@ -75,6 +99,26 @@ normalize_repo_files() {
         git -C "$dir" config core.autocrlf false 2>/dev/null || true
         git -C "$dir" config core.eol lf 2>/dev/null || true
     fi
+}
+
+# Каталоги, которые systemd ReadWritePaths требует ДО старта (ProtectSystem=strict)
+ensure_runtime_dirs() {
+    mkdir -p "$INSTALL_DIR/database" "$INSTALL_DIR/logs" "$INSTALL_DIR/backup"
+    # Опциональный env-файл для unit EnvironmentFile=-...
+    if [ ! -f "$INSTALL_DIR/opengate.env" ]; then
+        cat > "$INSTALL_DIR/opengate.env" <<'EOF'
+# Опционально: переопределения для systemd EnvironmentFile
+# BOT_TOKEN=
+# ADMIN_IDS=
+# WEB_BIND_HOST=127.0.0.1
+# REQUIRE_REDIS_FSM=0
+# ALLOW_FORCE_GIT_RESET=0
+EOF
+    fi
+    chown -R "$RUN_USER:$RUN_USER" \
+        "$INSTALL_DIR/database" "$INSTALL_DIR/logs" "$INSTALL_DIR/backup" "$INSTALL_DIR/opengate.env" \
+        2>/dev/null || true
+    print_ok "Каталоги database/ logs/ backup/ готовы"
 }
 
 # Запрос настроек у пользователя
@@ -145,14 +189,27 @@ install_system_deps() {
     export NEEDRESTART_MODE=a
 
     apt-get update -qq
+    # python3 + venv/pip: рантайм бота
+    # git: clone/update
+    # curl/ca-certificates: healthchecks / HTTPS
+    # sqlite3: ручная диагностика БД
+    # libjpeg/zlib: запасной путь сборки Pillow, если нет wheel
     apt-get install -y -qq \
+        python3 \
         python3-venv \
         python3-pip \
         git \
-        > /dev/null 2>&1
+        curl \
+        ca-certificates \
+        sqlite3 \
+        libjpeg62-turbo \
+        zlib1g \
+        > /dev/null 2>&1 || apt-get install -y -qq \
+            python3 python3-venv python3-pip git curl ca-certificates sqlite3 \
+            > /dev/null 2>&1
 
     print_ok "Системные пакеты обновлены"
-    print_ok "python3-venv, python3-pip, git установлены"
+    print_ok "python3, venv, pip, git, curl, sqlite3 установлены"
 }
 
 # Создание виртуального окружения и установка зависимостей
@@ -240,8 +297,22 @@ do_install() {
             BACKUP_CONFIG=1
         fi
         if [ -f "$INSTALL_DIR/database/vpn_bot.db" ]; then
-            cp "$INSTALL_DIR/database/vpn_bot.db" /tmp/opengate_db_backup.db
-            BACKUP_DB=1
+            # Консистентный снимок через sqlite3.backup (WAL-safe)
+            if python3 - "$INSTALL_DIR/database/vpn_bot.db" /tmp/opengate_db_backup.db <<'PY'
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+s = sqlite3.connect(src)
+d = sqlite3.connect(dst)
+with d:
+    s.backup(d)
+d.close(); s.close()
+PY
+            then
+                BACKUP_DB=1
+            else
+                cp "$INSTALL_DIR/database/vpn_bot.db" /tmp/opengate_db_backup.db
+                BACKUP_DB=1
+            fi
         fi
         safe_cd_away_from_install_dir
         rm -rf "$INSTALL_DIR"
@@ -261,8 +332,13 @@ do_install() {
         print_err "Каталог $INSTALL_DIR всё ещё существует — удалите вручную: rm -rf $INSTALL_DIR"
         return 1
     fi
-    git clone "$REPO_URL" "$INSTALL_DIR" -q
+    if ! git clone "$(resolve_repo_url "$REPO_URL")" "$INSTALL_DIR" -q; then
+        print_err "git clone не удался. Для приватного репо: export GITHUB_TOKEN=... или SSH remote."
+        return 1
+    fi
     cd "$INSTALL_DIR" || { print_err "Не удалось перейти в $INSTALL_DIR"; return 1; }
+    # origin без токена в .git/config (токен только на момент clone/fetch)
+    git remote set-url origin "$REPO_URL" 2>/dev/null || true
     normalize_repo_files "$INSTALL_DIR"
     print_ok "Репозиторий клонирован"
 
@@ -286,6 +362,7 @@ do_install() {
     # Виртуальное окружение и зависимости
     setup_venv
 
+    ensure_runtime_dirs
     chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
 
     # Настройка автозапуска
@@ -325,6 +402,9 @@ do_soft_update() {
         STASHED=1
     fi
 
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        git remote set-url origin "$(resolve_repo_url "$REPO_URL")"
+    fi
     if [ -n "$TARGET_COMMIT" ]; then
         git fetch -q origin
         git checkout -q "$TARGET_COMMIT"
@@ -332,6 +412,7 @@ do_soft_update() {
         git checkout -q main
         git pull -q origin main
     fi
+    git remote set-url origin "$REPO_URL" 2>/dev/null || true
 
     if [ "$STASHED" = "1" ]; then
         git stash pop -q 2>/dev/null || print_warn "Не удалось восстановить локальные изменения (конфликт)"
@@ -346,6 +427,7 @@ do_soft_update() {
     deactivate
     print_ok "Зависимости обновлены"
 
+    ensure_runtime_dirs
     chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR" 2>/dev/null || true
 
     # Перезапуск
@@ -386,7 +468,11 @@ do_hard_reset() {
     cd "$INSTALL_DIR"
 
     # Жёсткая перезапись: config.py и database/vpn_bot.db в .gitignore — не затрагиваются
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        git remote set-url origin "$(resolve_repo_url "$REPO_URL")"
+    fi
     git fetch origin -q
+    git remote set-url origin "$REPO_URL" 2>/dev/null || true
     local target="origin/main"
     if [ -n "$TARGET_COMMIT" ]; then
         target="$TARGET_COMMIT"
@@ -402,6 +488,7 @@ do_hard_reset() {
     deactivate
     print_ok "Зависимости обновлены"
 
+    ensure_runtime_dirs
     chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR" 2>/dev/null || true
 
     # Перезапуск

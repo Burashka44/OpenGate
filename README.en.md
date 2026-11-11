@@ -58,10 +58,8 @@ reconciled to the database, never the other way around.
 
 ### VPN panels
 
-- **3x-UI** — primary path: purchase, renewal, subscription mode, traffic sync
-- **Marzban** — user-centric REST, `subscription_url`, expiry and limit push
-- **Naive** — Caddy Admin API or SSH merge of `users.conf`
-- **mieru** — partial users JSON update plus `mita apply` (never a wipe)
+- **3x-UI** — purchase, renew, **subscription mode**: user gets the panel subscription URL
+- **LucX** — same API as 3x-UI; subscription also includes panel protocols (mieru, AWG, Hy2, …)
 
 ### Sales and marketing
 
@@ -164,7 +162,7 @@ Telegram ──> aiogram 3 (polling) ──> SQLite (WAL, auto-migrations)
                   │                        │
                   │                        └─> keys, payments, promos, referrals
                   ├─> payment APIs ──> confirmation ──> key delivery
-                  ├─> VPN panel (3x-UI / Marzban / Naive / mieru)
+                  ├─> VPN panel (3x-UI / LucX)
                   └─> aiohttp: /sub, webhooks, /healthz
 ```
 

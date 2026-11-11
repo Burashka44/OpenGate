@@ -6,11 +6,78 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+TG_TEXT_LIMIT = 4096
+
+
 def escape_html(text: str) -> str:
     """Экранирование спецсимволов для HTML parse_mode."""
     if not text:
         return ""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def clip_tg_html(text: Optional[str], limit: int = TG_TEXT_LIMIT) -> str:
+    """
+    Обрезает текст под лимит Telegram, не разрезая HTML-тег/entity посередине
+    и закрывая незакрытые теги (иначе TelegramBadRequest: can't parse entities).
+    """
+    import re
+
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+
+    suffix = "\n… (обрезано)"
+    cut = max(0, limit - len(suffix))
+    chunk = text[:cut]
+
+    # Не резать посередине тега: «... <b te» → обрезать до '<'
+    last_lt = chunk.rfind("<")
+    last_gt = chunk.rfind(">")
+    if last_lt > last_gt:
+        chunk = chunk[:last_lt]
+
+    # Не резать посередине &entity
+    last_amp = chunk.rfind("&")
+    if last_amp != -1 and ";" not in chunk[last_amp:]:
+        chunk = chunk[:last_amp]
+
+    # Закрыть незакрытые Telegram-HTML теги в обратном порядке
+    tag_re = re.compile(
+        r"</?(b|strong|i|em|u|ins|s|strike|del|code|pre|tg-spoiler|blockquote|a)(?:\s[^>]*)?>",
+        re.IGNORECASE,
+    )
+    stack: list[str] = []
+    for m in tag_re.finditer(chunk):
+        raw = m.group(0)
+        name = m.group(1).lower()
+        # нормализуем синонимы к каноническим закрывающим
+        canon = {
+            "strong": "b", "em": "i", "ins": "u",
+            "strike": "s", "del": "s",
+        }.get(name, name)
+        if raw.startswith("</"):
+            if stack and stack[-1] == canon:
+                stack.pop()
+            elif canon in stack:
+                while stack and stack[-1] != canon:
+                    stack.pop()
+                if stack:
+                    stack.pop()
+        else:
+            stack.append(canon)
+
+    while stack:
+        chunk += f"</{stack.pop()}>"
+
+    # Если после закрытия тегов превысили лимит — режем в plain (без тегов)
+    if len(chunk) + len(suffix) > limit:
+        plain = re.sub(r"<[^>]+>", "", chunk)
+        plain = plain[: max(0, limit - len(suffix))]
+        return plain + suffix
+
+    return chunk + suffix
 
 
 def get_message_text_for_storage(
@@ -77,6 +144,9 @@ async def safe_edit_or_send(
     """
     is_current_media = bool(message.photo or message.video or message.document or message.animation)
     want_media = photo is not None
+    if text is not None:
+        # caption у фото короче (1024), текст сообщения — 4096
+        text = clip_tg_html(text, 1024 if want_media else TG_TEXT_LIMIT)
     
     # Отключаем превью ссылок по умолчанию. Включаем только если show_web_page_preview=True
     link_preview = LinkPreviewOptions(is_disabled=not show_web_page_preview)

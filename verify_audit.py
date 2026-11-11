@@ -78,9 +78,6 @@ def test_imports():
         "bot.services.http_utils",
         "bot.services.panels.base",
         "bot.services.panels.xui",
-        "bot.services.panels.marzban",
-        "bot.services.panels.naive",
-        "bot.services.panels.mieru",
         "web.server",
         "database.db_payments",
         "bot.handlers.user.payments.balance",
@@ -102,9 +99,6 @@ def test_panels():
     from bot.services.vpn_api import get_client_from_server_data, KNOWN_PANEL_TYPES
     from bot.services.panels.base import VPNAPIError
     from bot.services.panels.xui import XUIClient
-    from bot.services.panels.marzban import MarzbanClient
-    from bot.services.panels.naive import NaiveClient
-    from bot.services.panels.mieru import MieruClient
 
     # clear cache between
     from bot.services import vpn_api as va
@@ -121,38 +115,26 @@ def test_panels():
 
     va._clients.clear()
     c = get_client_from_server_data({
-        "id": 9102, "name": "m", "host": "127.0.0.1", "port": 443,
-        "login": "a", "password": "b", "protocol": "https", "panel_type": "marzban",
+        "id": 9102, "name": "l", "host": "127.0.0.1", "port": 443,
+        "login": "a", "password": "b", "protocol": "https", "panel_type": "lucx",
+        "web_base_path": "/",
     })
-    if isinstance(c, MarzbanClient) and not c.supports_inbound_select:
-        ok("factory marzban")
+    if isinstance(c, XUIClient) and hasattr(c, "ensure_lucx_client"):
+        ok("factory lucx -> XUIClient")
     else:
-        bad("factory marzban")
+        bad("factory lucx -> XUIClient")
 
     va._clients.clear()
     try:
         get_client_from_server_data({
             "id": 9103, "name": "bad", "host": "h", "port": 1,
-            "login": "a", "password": "b", "panel_type": "unknown_panel",
+            "login": "a", "password": "b", "panel_type": "mieru_panel",
         })
         bad("unknown panel_type should raise")
     except VPNAPIError:
         ok("unknown panel_type -> VPNAPIError")
 
-    n = NaiveClient({"id": 1, "host": "n.example", "public_host": "n.example", "extra_config": "{}"})
-    link = n.build_naive_link("u", "p")
-    if link == "naive+https://u:p@n.example":
-        ok("naive link")
-    else:
-        bad("naive link", link)
-
-    m = MieruClient({"id": 1, "host": "m.example", "public_host": "m.example", "extra_config": "{}"})
-    if "mieru://" in m.build_mieru_link("a", "b"):
-        ok("mieru link")
-    else:
-        bad("mieru link")
-
-    if KNOWN_PANEL_TYPES == frozenset({"xui", "marzban", "naive", "mieru"}):
+    if KNOWN_PANEL_TYPES == frozenset({"xui", "lucx"}):
         ok("KNOWN_PANEL_TYPES")
     else:
         bad("KNOWN_PANEL_TYPES")

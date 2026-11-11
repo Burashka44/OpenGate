@@ -18,12 +18,10 @@ class AdminStates(StatesGroup):
     
     # ========== Добавление сервера (пошаговый диалог) ==========
     add_server_name = State()        # Шаг 1: Название
-    add_server_panel_type = State()  # Тип панели
+    add_server_panel_type = State()  # Тип панели (кнопки: xui / lucx)
     add_server_url = State()         # URL панели
     add_server_login = State()       # Логин
     add_server_password = State()    # Пароль
-    add_server_public_host = State()
-    add_server_extra_config = State()
     add_server_confirm = State()     # Подтверждение после проверки
     
     # ========== Редактирование сервера ==========
@@ -134,6 +132,12 @@ class AdminStates(StatesGroup):
 # ПАРАМЕТРЫ СЕРВЕРОВ
 # ============================================================================
 
+# Тип панели выбирается кнопками при добавлении сервера.
+PANEL_TYPE_CHOICES = [
+    ('xui', '3x-UI — подписка панели'),
+    ('lucx', 'LucX — подписка + mieru/AWG/…'),
+]
+
 SERVER_PARAMS = [
     {
         "key": "name",
@@ -145,14 +149,14 @@ SERVER_PARAMS = [
     {
         "key": "panel_type",
         "label": "Тип панели",
-        "hint": "xui | marzban | naive | mieru",
-        "validate": lambda x: x.strip().lower() in ('xui', 'marzban', 'naive', 'mieru'),
-        "error": "Допустимо: xui, marzban, naive, mieru"
+        "hint": "xui | lucx",
+        "validate": lambda x: x.strip().lower() in ('xui', 'lucx'),
+        "error": "Допустимо: xui, lucx"
     },
     {
         "key": "panel_url",
         "label": "URL панели",
-        "hint": "например: https://192.168.1.1:2053/secretpath/ или просто 192.168.1.1:2053",
+        "hint": "например: https://panel.example.com/secretpath/ или 192.168.1.1:2053",
         "validate": lambda x: len(x.strip()) >= 5 and ":" in x,
         "error": "Введите корректную ссылку с портом, например: https://123.45.67.89:2053/api/"
     },
@@ -169,20 +173,6 @@ SERVER_PARAMS = [
         "hint": "пароль для входа в панель",
         "validate": lambda x: len(x) >= 1,
         "error": "Введите пароль"
-    },
-    {
-        "key": "public_host",
-        "label": "Public host",
-        "hint": "хост для клиентских ссылок (naive/mieru), можно '-' чтобы пропустить",
-        "validate": lambda x: True,
-        "error": ""
-    },
-    {
-        "key": "extra_config",
-        "label": "Extra config JSON",
-        "hint": 'JSON настроек панели, например {"caddy_admin_url":"http://127.0.0.1:2019"} или "-"',
-        "validate": lambda x: x.strip() in ('', '-') or x.strip().startswith('{'),
-        "error": "Введите JSON или '-'"
     },
 ]
 
@@ -271,9 +261,9 @@ TARIFF_PARAMS = [
     {
         "key": "protocol_family",
         "label": "Семейство протокола",
-        "hint": "xray | naive | mieru (фильтр серверов)",
-        "validate": lambda x: x.strip().lower() in ('xray', 'naive', 'mieru'),
-        "error": "Допустимо: xray, naive, mieru",
+        "hint": "xray (3x-UI / LucX; содержимое подписки задаёт панель)",
+        "validate": lambda x: x.strip().lower() in ('xray',),
+        "error": "Допустимо: xray",
         "convert": lambda x: x.strip().lower(),
     },
 ]

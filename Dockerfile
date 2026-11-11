@@ -3,7 +3,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    WEB_BIND_HOST=0.0.0.0
 
 # Системные зависимости для pillow/qrcode
 RUN apt-get update \
@@ -28,9 +29,8 @@ USER opengate
 
 EXPOSE 8081
 
-# Веб-сервер по умолчанию выключен (web_enabled=0), поэтому healthcheck
-# проверяет процесс бота, а не /healthz.
+# Heartbeat пишет main.py; если файла нет / устарел — контейнер unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD python -c "import os,signal; os.kill(1,0)" || exit 1
+    CMD python -c "import time,pathlib; p=pathlib.Path('logs/heartbeat'); assert p.exists() and time.time()-p.stat().st_mtime<90"
 
 CMD ["python", "main.py"]

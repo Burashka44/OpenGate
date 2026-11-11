@@ -680,16 +680,15 @@ class XUIClient(BaseVPNClient):
         }
         
         # Протокол-зависимые поля
-        if protocol == 'trojan':
-            # Trojan использует password вместо id
+        if protocol in ('trojan', 'shadowsocks', 'mieru', 'hysteria', 'hysteria2'):
+            # password-based протоколы (в т.ч. LucX mieru / Hy2)
             client_entry["password"] = client_uuid
-            client_entry["flow"] = flow
-        elif protocol == 'shadowsocks':
-            # Shadowsocks — клиенты наследуют password/method из inbound
-            client_entry["password"] = client_uuid
-            client_entry["method"] = ""
+            if protocol == 'trojan':
+                client_entry["flow"] = flow
+            if protocol == 'shadowsocks':
+                client_entry["method"] = ""
         else:
-            # VLESS / VMess — используют id (UUID)
+            # VLESS / VMess / WireGuard-like — id (UUID)
             client_entry["id"] = client_uuid
             client_entry["flow"] = flow
         
@@ -710,6 +709,118 @@ class XUIClient(BaseVPNClient):
             "expire_time": expire_time,
             "total_gb": total_gb,
             "sub_id": client_entry["subId"],
+        }
+
+    async def ensure_lucx_client(
+        self,
+        email: str,
+        inbound_ids: List[int],
+        *,
+        sub_id: str,
+        expiry_time_ms: int = 0,
+        total_gb_bytes: int = 0,
+        enable: bool = True,
+        tg_id: str = '',
+        limit_ip: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        LucX client-centric API: один клиент панели + attach ко всем inbound.
+
+        На LucX подписка собирается из всех прикреплённых inbound (VLESS/Hy2/mieru/AWG/…).
+        Секреты протоколов панель генерирует сама.
+
+        Returns:
+            dict с uuid/sub_id/created
+        """
+        from urllib.parse import quote
+
+        if not inbound_ids:
+            raise VPNAPIError("LucX: нет inbound для attach")
+
+        email_path = quote(str(email), safe='')
+        created = False
+
+        def _unwrap_client(payload: Any) -> Dict[str, Any]:
+            if not isinstance(payload, dict):
+                return {}
+            obj = payload.get('obj', payload)
+            if isinstance(obj, dict) and isinstance(obj.get('client'), dict):
+                return obj['client']
+            if isinstance(obj, dict) and (obj.get('email') or obj.get('uuid') or obj.get('id')):
+                return obj
+            return {}
+
+        client_obj: Dict[str, Any] = {}
+        try:
+            existing = await self._request(
+                "GET", f"/panel/api/clients/get/{email_path}", retry=False, log_error=False
+            )
+            client_obj = _unwrap_client(existing)
+        except Exception:
+            client_obj = {}
+
+        if client_obj.get('email') == email or client_obj.get('uuid') or client_obj.get('id'):
+            # Прикрепляем inbound'ы (идемпотентно)
+            try:
+                await self._request(
+                    "POST",
+                    f"/panel/api/clients/{email_path}/attach",
+                    data={"inboundIds": inbound_ids},
+                )
+            except Exception as e:
+                logger.warning(f"LucX attach для {email}: {e}")
+            # Обновляем лимиты/срок через inbound updateClient (если клиент уже в settings)
+            try:
+                cid = client_obj.get('uuid') or client_obj.get('id') or ''
+                if cid:
+                    await self.update_client_full(
+                        inbound_id=inbound_ids[0],
+                        client_uuid=str(cid),
+                        email=email,
+                        expiry_time_ms=expiry_time_ms,
+                        total_gb_bytes=total_gb_bytes,
+                    )
+            except Exception as e:
+                logger.debug(f"LucX update после attach для {email}: {e}")
+        else:
+            body = {
+                "client": {
+                    "email": email,
+                    "enable": enable,
+                    "expiryTime": expiry_time_ms,
+                    "totalGB": total_gb_bytes,
+                    "limitIp": limit_ip,
+                    "limitHwid": 0,
+                    "tgId": tg_id,
+                    "subId": sub_id,
+                },
+                "inboundIds": inbound_ids,
+            }
+            await self._request("POST", "/panel/api/clients/add", data=body)
+            created = True
+            try:
+                existing = await self._request(
+                    "GET", f"/panel/api/clients/get/{email_path}", retry=False, log_error=False
+                )
+                client_obj = _unwrap_client(existing) or {"email": email, "subId": sub_id}
+            except Exception:
+                client_obj = {"email": email, "subId": sub_id}
+
+        uuid_or_id = (
+            client_obj.get('uuid')
+            or client_obj.get('id')
+            or client_obj.get('password')
+            or ''
+        )
+        if client_obj.get('subId'):
+            sub_id = client_obj['subId']
+
+        return {
+            "uuid": str(uuid_or_id),
+            "email": email,
+            "sub_id": sub_id,
+            "created": created,
+            "inbound_ids": inbound_ids,
         }
     
     async def get_inbound_flow(self, inbound_id: int) -> str:

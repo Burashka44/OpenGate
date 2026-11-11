@@ -17,6 +17,8 @@ __all__ = [
     'is_user_banned',
     'has_used_trial',
     'mark_trial_used',
+    'claim_trial',
+    'release_trial',
     'get_all_users_count',
     'get_users_stats',
     'get_all_users_paginated',
@@ -143,6 +145,28 @@ def mark_trial_used(user_id: int) -> None:
         conn.execute(
             "UPDATE users SET used_trial = 1 WHERE id = ?",
             (user_id,)
+        )
+
+
+def claim_trial(user_id: int) -> bool:
+    """
+    Атомарно захватывает право на триал.
+    True = можно выдавать; False = триал уже использован.
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE users SET used_trial = 1 WHERE id = ? AND used_trial = 0",
+            (user_id,),
+        )
+        return cursor.rowcount > 0
+
+
+def release_trial(user_id: int) -> None:
+    """Откатывает claim триала при ошибке создания ключа."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET used_trial = 0 WHERE id = ?",
+            (user_id,),
         )
         logger.info(f"Пользователь ID {user_id} использовал пробный период")
 
@@ -504,6 +528,9 @@ def add_to_balance(user_id: int, cents: int) -> bool:
     Returns:
         True если успешно
     """
+    if cents <= 0:
+        logger.warning(f"add_to_balance: отказ cents={cents} user={user_id}")
+        return False
     with get_db() as conn:
         cursor = conn.execute(
             "UPDATE users SET personal_balance = personal_balance + ? WHERE id = ?",
@@ -525,6 +552,9 @@ def deduct_from_balance(user_id: int, cents: int) -> bool:
     Returns:
         True если успешно
     """
+    if cents <= 0:
+        logger.warning(f"deduct_from_balance: отказ cents={cents} user={user_id}")
+        return False
     with get_db() as conn:
         cursor = conn.execute(
             "UPDATE users SET personal_balance = personal_balance - ? WHERE id = ? AND personal_balance >= ?",

@@ -15,16 +15,67 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
+import time
+from collections import defaultdict, deque
 from datetime import datetime
-from typing import Optional
+from typing import Deque, Dict, Optional
 
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
 BOT_APP_KEY = web.AppKey("bot", object)
+
+# Простой rate-limit для /qr (IP → timestamps)
+_QR_HITS: Dict[str, Deque[float]] = defaultdict(deque)
+_QR_LIMIT_PER_MIN = 30
+
+# Фоновые задачи вебхуков (сильные ссылки + лог исключений)
+_background_tasks: set = set()
+
+
+def _spawn(coro):
+    """Запускает корутину в фоне с удержанием Task и логированием ошибок."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception("webhook background task failed: %s", exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+def _client_ip(request: web.Request) -> str:
+    """IP для rate-limit: X-Real-IP только от localhost/proxy peer."""
+    peer = request.remote or "unknown"
+    if peer in ("127.0.0.1", "::1", "localhost"):
+        forwarded = (
+            request.headers.get("X-Real-IP")
+            or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        )
+        if forwarded:
+            return forwarded
+    return peer
+
+
+async def drain_background_tasks(timeout: float = 20.0) -> None:
+    """Дожидается завершения фоновых webhook-задач при shutdown."""
+    pending = [t for t in list(_background_tasks) if not t.done()]
+    if not pending:
+        return
+    try:
+        await asyncio.wait(pending, timeout=timeout)
+    except Exception as e:
+        logger.warning(f"drain_background_tasks: {e}")
 
 
 # ============================================================================
@@ -118,21 +169,22 @@ def _build_sub_block(sub_url: Optional[str]) -> str:
             'Откройте бота и получите ключ в разделе «Мои ключи».</div>'
         )
     import urllib.parse
+    safe_url = html.escape(sub_url, quote=True)
     encoded = urllib.parse.quote(sub_url, safe='')
     b64 = base64.b64encode(sub_url.encode()).decode()
     qr_src = f"/qr?data={encoded}"
     return f"""
   <div class="card">
     <div class="qr"><img src="{qr_src}" alt="QR"></div>
-    <div class="link-box" id="suburl">{sub_url}</div>
+    <div class="link-box" id="suburl">{safe_url}</div>
     <button class="btn ghost" id="copybtn" onclick="copySub()">📋 Скопировать ссылку</button>
     <div class="apps">
-      <a class="btn" href="happ://add/{sub_url}">Happ</a>
-      <a class="btn" href="v2raytun://import/{sub_url}">v2RayTun</a>
-      <a class="btn" href="streisand://import/{sub_url}">Streisand</a>
-      <a class="btn" href="hiddify://import/{sub_url}">Hiddify</a>
+      <a class="btn" href="happ://add/{encoded}">Happ</a>
+      <a class="btn" href="v2raytun://import/{encoded}">v2RayTun</a>
+      <a class="btn" href="streisand://import/{encoded}">Streisand</a>
+      <a class="btn" href="hiddify://import/{encoded}">Hiddify</a>
       <a class="btn" href="v2box://install-sub?url={encoded}">V2Box</a>
-      <a class="btn" href="sub://{b64}">FoXray</a>
+      <a class="btn" href="sub://{html.escape(b64, quote=True)}">FoXray</a>
     </div>
   </div>"""
 
@@ -144,6 +196,8 @@ async def handle_sub_page(request: web.Request) -> web.Response:
     from database.db_keys import is_key_active
 
     token = request.match_info.get('token', '')
+    if not token or len(token) < 24 or len(token) > 128:
+        return web.Response(status=404, text="Not found")
     key = get_key_by_page_token(token)
     if not key:
         return web.Response(status=404, text="Not found")
@@ -170,30 +224,39 @@ async def handle_sub_page(request: web.Request) -> web.Response:
         traffic_pct = min(100, int(used / limit * 100))
         traffic_block = (
             f'<div class="row"><span class="k">Трафик</span>'
-            f'<span>{format_traffic(used)} / {format_traffic(limit)}</span></div>'
+            f'<span>{html.escape(format_traffic(used))} / {html.escape(format_traffic(limit))}</span></div>'
             f'<div class="bar"><i></i></div>'
         )
 
     sub_url = await get_subscription_url_for_key(key)
 
-    key_name = key.get('custom_name') or f"#{key['id']}"
-    html = _SUB_PAGE_TEMPLATE.format(
-        title=key.get('server_name') or "VPN",
+    key_name = html.escape(str(key.get('custom_name') or f"#{key['id']}"))
+    page_html = _SUB_PAGE_TEMPLATE.format(
+        title=html.escape(str(key.get('server_name') or "VPN")),
         key_name=key_name,
         status_class="ok" if active else "bad",
         status_text="Активна" if active else "Неактивна",
-        expires_at=expires_str,
-        days_left=days_left,
+        expires_at=html.escape(expires_str),
+        days_left=html.escape(days_left),
         traffic_block=traffic_block,
         traffic_pct=traffic_pct,
         sub_block=_build_sub_block(sub_url if active else None),
-        updated_at=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        updated_at=html.escape(datetime.now().strftime("%d.%m.%Y %H:%M")),
     )
-    return web.Response(text=html, content_type='text/html')
+    return web.Response(text=page_html, content_type='text/html')
 
 
 async def handle_qr(request: web.Request) -> web.Response:
     """GET /qr?data=... — PNG QR-код (для subscription page)."""
+    peer = _client_ip(request)
+    now = time.monotonic()
+    q = _QR_HITS[peer]
+    while q and now - q[0] > 60.0:
+        q.popleft()
+    if len(q) >= _QR_LIMIT_PER_MIN:
+        return web.Response(status=429, text="Too many requests")
+    q.append(now)
+
     data = request.query.get('data', '')
     if not data or len(data) > 2048:
         return web.Response(status=400, text="Bad request")
@@ -354,9 +417,7 @@ async def handle_cryptobot_webhook(request: web.Request) -> web.Response:
         order_id = payload.get('payload', '')
         invoice_id = str(payload.get('invoice_id') or payload.get('id') or order_id)
         if order_id:
-            asyncio.create_task(
-                _enqueue_or_fulfill(request, 'cryptobot', f"cb:{invoice_id}", order_id, data)
-            )
+            _spawn(_enqueue_or_fulfill(request, 'cryptobot', f"cb:{invoice_id}", order_id, data))
 
     return web.Response(text="ok")
 
@@ -387,9 +448,7 @@ async def handle_heleket_webhook(request: web.Request) -> web.Response:
     order_id = data.get('order_id', '')
     event_id = str(data.get('uuid') or data.get('txid') or order_id)
     if status in ('paid', 'paid_over') and order_id:
-        asyncio.create_task(
-            _enqueue_or_fulfill(request, 'heleket', f"hk:{event_id}", order_id, data)
-        )
+        _spawn(_enqueue_or_fulfill(request, 'heleket', f"hk:{event_id}", order_id, data))
 
     return web.Response(text="ok")
 
@@ -429,12 +488,17 @@ async def start_web_server(bot) -> Optional[web.AppRunner]:
         return None
 
     port = get_web_port()
+    try:
+        from config import WEB_BIND_HOST
+        host = (WEB_BIND_HOST or "127.0.0.1").strip() or "127.0.0.1"
+    except Exception:
+        host = "127.0.0.1"
     app = create_app(bot)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    site = web.TCPSite(runner, host=host, port=port)
     await site.start()
-    logger.info(f"🌐 Веб-сервер запущен на 0.0.0.0:{port}")
+    logger.info(f"🌐 Веб-сервер запущен на {host}:{port}")
     return runner
 
 

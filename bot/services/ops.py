@@ -222,12 +222,95 @@ async def process_auto_renewals(bot: Bot) -> None:
             logger.error(f"Автопродление ключа {key['id']} post-notify: {e}")
 
 
+async def retry_unfulfilled_orders(bot: Bot) -> None:
+    """
+    Дожимает paid-ордера без fulfilled_at (сбой после complete_order).
+    """
+    from database.db_payments import (
+        get_unfulfilled_paid_orders, claim_order_fulfillment, release_order_fulfillment,
+        update_payment_key_id,
+    )
+    from database.requests import (
+        extend_vpn_key, create_initial_vpn_key, get_tariff_by_id, consume_user_discount,
+    )
+    from bot.services.alerts import send_admin_alert
+    from bot.services.vpn_api import (
+        push_key_to_panel, restore_traffic_limit_in_db, ensure_subscription_keys_on_server,
+    )
+
+    from database.requests import get_vpn_key_by_id
+
+    orders = get_unfulfilled_paid_orders(20)
+    for order in orders:
+        order_id = order.get('order_id')
+        if not claim_order_fulfillment(order_id):
+            continue
+        granted = False
+        try:
+            days = order.get('period_days') or order.get('duration_days') or 30
+            key_id = order.get('vpn_key_id')
+            if key_id:
+                key = get_vpn_key_by_id(key_id) or {}
+                # Черновик после create_initial_vpn_key: уже выдан срок, extend НЕ нужен.
+                # Renew: у ключа уже есть server/panel — тогда extend.
+                is_new_draft = (
+                    not key.get('server_id')
+                    and not key.get('client_uuid')
+                    and not key.get('panel_email')
+                )
+                if not is_new_draft:
+                    if not extend_vpn_key(key_id, days):
+                        raise RuntimeError(f"extend_vpn_key({key_id}) failed")
+                granted = True
+                consume_user_discount(order['user_id'])
+                if not is_new_draft:
+                    try:
+                        restore_traffic_limit_in_db(key_id)
+                        await push_key_to_panel(key_id, reset_traffic=True)
+                        await ensure_subscription_keys_on_server(key_id)
+                    except Exception as e:
+                        logger.warning(f"retry panel sync {key_id}: {e}")
+            else:
+                if not order.get('tariff_id'):
+                    raise RuntimeError("no tariff_id")
+                tariff = get_tariff_by_id(order['tariff_id'])
+                traffic_limit_bytes = (
+                    (tariff.get('traffic_limit_gb', 0) or 0) * (1024 ** 3) if tariff else 0
+                )
+                key_id = create_initial_vpn_key(
+                    order['user_id'], order['tariff_id'], days, traffic_limit=traffic_limit_bytes
+                )
+                update_payment_key_id(order_id, key_id)
+                granted = True
+                consume_user_discount(order['user_id'])
+            logger.info(f"retry_unfulfilled: order {order_id} fulfilled key={key_id}")
+            await send_admin_alert(
+                bot,
+                f"✅ Довыдача ордера <code>{order_id}</code> (key={key_id})",
+            )
+        except Exception as e:
+            if not granted:
+                release_order_fulfillment(order_id)
+            logger.error(f"retry_unfulfilled order={order_id}: {e}")
+            try:
+                await send_admin_alert(
+                    bot,
+                    f"🚨 Не удалось довыдать ордер <code>{order_id}</code>\n{e}",
+                )
+            except Exception:
+                pass
+
+
 async def auto_renew_loop(bot: Bot) -> None:
-    """Фоновая задача автопродления (раз в час, если включено)."""
+    """Фоновая задача автопродления + retry unfulfilled (раз в час)."""
     logger.info("🔄 Планировщик автопродления запущен")
     await asyncio.sleep(120)
     while True:
         try:
+            try:
+                await retry_unfulfilled_orders(bot)
+            except Exception as e:
+                logger.error(f"Ошибка retry_unfulfilled: {e}")
             if is_auto_renew_enabled():
                 await process_auto_renewals(bot)
             await asyncio.sleep(3600)

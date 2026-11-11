@@ -8,9 +8,13 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       ADMIN_IDS: ${ADMIN_IDS}
+      WEB_BIND_HOST: ${WEB_BIND_HOST:-0.0.0.0}
+      ALLOW_FORCE_GIT_RESET: ${ALLOW_FORCE_GIT_RESET:-0}
+      REQUIRE_REDIS_FSM: ${REQUIRE_REDIS_FSM:-0}
     ports:
       # Веб: /sub + вебхуки (включается настройкой web_enabled=1 в админке /ops)
-      - "${WEB_PORT:-8081}:8081"
+      # На хосте лучше проксировать nginx → 127.0.0.1:8081 и не публиковать порт наружу.
+      - "${WEB_PORT:-127.0.0.1:8081}:8081"
     volumes:
       # Сохраняем БД и логи между перезапусками
       - ./database:/app/database

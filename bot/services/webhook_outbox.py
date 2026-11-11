@@ -36,24 +36,78 @@ def enqueue_webhook_event(
             return False
 
 
-def claim_pending(limit: int = 20) -> List[Dict[str, Any]]:
+def reclaim_stale_processing(minutes: int = 5) -> int:
+    """Возвращает зависшие processing → pending (после рестарта / таймаута)."""
     with get_db() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE webhook_outbox
+            SET status = 'pending', claimed_at = NULL
+            WHERE status = 'processing'
+              AND (
+                    claimed_at IS NULL
+                    OR datetime(claimed_at) < datetime('now', ?)
+                  )
+            """,
+            (f'-{int(minutes)} minutes',),
+        )
+        return cursor.rowcount or 0
+
+
+def claim_pending(limit: int = 20) -> List[Dict[str, Any]]:
+    """Атомарно захватывает pending → processing."""
+    from database.connection import get_connection
+
+    reclaim_stale_processing(5)
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
-            SELECT * FROM webhook_outbox
+            SELECT id FROM webhook_outbox
             WHERE status = 'pending' AND attempts < 10
             ORDER BY id ASC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        ids = [int(r['id']) for r in rows]
+        if not ids:
+            conn.commit()
+            return []
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(
+            f"""
+            UPDATE webhook_outbox
+            SET status = 'processing', claimed_at = CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders}) AND status = 'pending'
+            """,
+            ids,
+        )
+        claimed = conn.execute(
+            f"""
+            SELECT * FROM webhook_outbox
+            WHERE id IN ({placeholders}) AND status = 'processing'
+            """,
+            ids,
+        ).fetchall()
+        conn.commit()
+        return [dict(r) for r in claimed]
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def mark_done(row_id: int) -> None:
     with get_db() as conn:
         conn.execute(
-            "UPDATE webhook_outbox SET status='done', processed_at=CURRENT_TIMESTAMP WHERE id=?",
+            """
+            UPDATE webhook_outbox
+            SET status='done', processed_at=CURRENT_TIMESTAMP, claimed_at=NULL
+            WHERE id=?
+            """,
             (row_id,),
         )
 
@@ -65,6 +119,7 @@ def mark_retry(row_id: int, error: str) -> None:
             UPDATE webhook_outbox
             SET attempts = attempts + 1,
                 last_error = ?,
+                claimed_at = NULL,
                 status = CASE WHEN attempts + 1 >= 10 THEN 'failed' ELSE 'pending' END
             WHERE id = ?
             """,

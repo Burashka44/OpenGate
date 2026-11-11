@@ -116,16 +116,37 @@ async def pay_use_balance_renew_handler(callback: CallbackQuery, state: FSMConte
     await safe_edit_or_send(callback.message, f"💎 <b>Оплата с баланса</b>\n\n🔑 Ключ: <b>{escape_html(key['display_name'])}</b>\nВаш баланс: <b>{_format_price_compact(balance_cents)}</b>\n\nВыберите тариф:", reply_markup=renew_tariff_select_kb(rub_tariffs, key_id, is_balance=True))
     await callback.answer()
 
+def _resolve_owned_key_id(key_id, telegram_id):
+    """Проверяет ownership; возвращает int key_id или None. False = чужой/несуществующий."""
+    from database.requests import get_key_details_for_user
+    if not key_id:
+        return None
+    try:
+        key_id = int(key_id)
+    except (TypeError, ValueError):
+        return False
+    owned = get_key_details_for_user(key_id, telegram_id)
+    if not owned:
+        return False
+    return int(owned['id'])
+
+
+def _tariff_allowed_for_renew(key: dict, tariff_id: int) -> bool:
+    from bot.utils.groups import get_tariffs_for_renewal
+    allowed = {int(t['id']) for t in get_tariffs_for_renewal(key.get('tariff_id', 0) or 0)}
+    return int(tariff_id) in allowed
+
+
 @router.callback_query(F.data.startswith('balance_pay:'))
 async def balance_pay_handler(callback: CallbackQuery, state: FSMContext):
     """
     Показ экрана оплаты с балансом после выбора тарифа.
     Callback: balance_pay:{tariff_id} или balance_pay:{tariff_id}:{key_id}
     """
-    from database.requests import get_user_internal_id, get_tariff_by_id
+    from database.requests import get_user_internal_id, get_tariff_by_id, get_key_details_for_user
     parts = callback.data.split(':')
     tariff_id = int(parts[1])
-    key_id = int(parts[2]) if len(parts) > 2 and parts[2] != '0' else None
+    raw_key_id = int(parts[2]) if len(parts) > 2 and parts[2] != '0' else None
     user_id = get_user_internal_id(callback.from_user.id)
     if not user_id:
         await callback.answer('❌ Ошибка пользователя', show_alert=True)
@@ -134,28 +155,36 @@ async def balance_pay_handler(callback: CallbackQuery, state: FSMContext):
     if not tariff:
         await callback.answer('❌ Тариф не найден', show_alert=True)
         return
+    key_id = None
+    if raw_key_id:
+        key = get_key_details_for_user(raw_key_id, callback.from_user.id)
+        if not key:
+            await callback.answer('❌ Ключ не найден', show_alert=True)
+            return
+        if not _tariff_allowed_for_renew(key, tariff_id):
+            await callback.answer('❌ Тариф недоступен для этого ключа', show_alert=True)
+            return
+        key_id = int(key['id'])
     await _show_balance_payment_screen(callback, state, tariff_id, user_id, key_id=key_id)
 
 @router.callback_query(F.data.startswith('pay_with_balance:'))
 async def pay_with_balance_handler(callback: CallbackQuery, state: FSMContext):
     """
     Полная оплата с баланса (когда remaining_cents == 0).
-    Атомарная операция: списать + выдать ключ.
-    
-    При оплате балансом реферальные вознаграждения НЕ начисляются.
+    Порядок: pending → deduct → complete → grant → fulfilled.
     """
     from database.requests import (
-        get_user_internal_id, get_user_balance, deduct_from_balance, get_tariff_by_id,
+        get_user_balance, deduct_from_balance, get_tariff_by_id,
         get_or_create_user, create_initial_vpn_key, extend_vpn_key,
         create_pending_order_from_tariff, complete_order, update_payment_key_id,
         add_to_balance, mark_order_fulfilled, consume_user_discount,
+        get_key_details_for_user, get_vpn_key_by_id, delete_vpn_key,
     )
+    from database.connection import get_db
     from bot.services.billing import get_discounted_tariff
     from bot.services.user_locks import user_locks
     from bot.services.vpn_api import push_key_to_panel, restore_traffic_limit_in_db
     data = await state.get_data()
-    balance_to_deduct = data.get('balance_to_deduct', 0)
-    tariff_price_cents = data.get('tariff_price_cents', 0)
     tariff_id = data.get('tariff_id')
     key_id = data.get('key_id')
     parts = callback.data.split(':')
@@ -167,12 +196,22 @@ async def pay_with_balance_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer('❌ Ошибка: тариф не определён', show_alert=True)
         return
     telegram_id = callback.from_user.id
+    owned = _resolve_owned_key_id(key_id, telegram_id)
+    if owned is False:
+        await callback.answer('❌ Ключ не найден', show_alert=True)
+        return
+    key_id = owned
     (user, _) = get_or_create_user(telegram_id, callback.from_user.username)
     user_internal_id = user['id']
     tariff = get_tariff_by_id(tariff_id)
     if not tariff:
         await callback.answer('❌ Тариф не найден', show_alert=True)
         return
+    if key_id:
+        key = get_key_details_for_user(key_id, telegram_id)
+        if not key or not _tariff_allowed_for_renew(key, tariff_id):
+            await callback.answer('❌ Тариф недоступен для этого ключа', show_alert=True)
+            return
     tariff = get_discounted_tariff(user_internal_id, tariff)
     tariff_price_cents = int(tariff.get('price_rub', 0) * 100)
     days = tariff['duration_days']
@@ -191,15 +230,24 @@ async def pay_with_balance_handler(callback: CallbackQuery, state: FSMContext):
         )
         deducted = False
         prev_expires = None
+        granted = False
         try:
+            if not deduct_from_balance(user_internal_id, actual_deduct):
+                await callback.answer('❌ Не удалось списать средства с баланса', show_alert=True)
+                return
+            deducted = True
+            if not complete_order(order_id):
+                add_to_balance(user_internal_id, actual_deduct)
+                logger.warning('complete_order не обновил статус для balance order %s', order_id)
+                await callback.answer('❌ Ошибка завершения оплаты. Средства возвращены на баланс.', show_alert=True)
+                return
             if key_id:
-                from database.requests import get_vpn_key_by_id
-                from database.connection import get_db
                 prev = get_vpn_key_by_id(key_id)
                 prev_expires = prev.get('expires_at') if prev else None
-                extend_vpn_key(key_id, days)
+                if not extend_vpn_key(key_id, days):
+                    raise RuntimeError(f'extend_vpn_key({key_id}) failed')
                 restore_traffic_limit_in_db(key_id)
-                await push_key_to_panel(key_id, reset_traffic=True)
+                granted = True
                 logger.info(f'Ключ {key_id} продлён на {days} дней за баланс {actual_deduct} коп')
             else:
                 traffic_limit_bytes = (tariff.get('traffic_limit_gb', 0) or 0) * 1024 ** 3
@@ -207,40 +255,43 @@ async def pay_with_balance_handler(callback: CallbackQuery, state: FSMContext):
                     user_internal_id, tariff_id, days, traffic_limit=traffic_limit_bytes,
                 )
                 update_payment_key_id(order_id, new_key_id)
+                granted = True
                 logger.info(
                     f'Создан черновик ключа {new_key_id} для user {user_internal_id} '
                     f'за баланс {actual_deduct} коп'
                 )
-            if not deduct_from_balance(user_internal_id, actual_deduct):
-                if key_id and prev_expires:
-                    with get_db() as conn:
-                        conn.execute(
-                            "UPDATE vpn_keys SET expires_at = ? WHERE id = ?",
-                            (prev_expires, key_id)
-                        )
-                await callback.answer('❌ Не удалось списать средства с баланса', show_alert=True)
-                return
-            deducted = True
             consume_user_discount(user_internal_id)
             mark_order_fulfilled(order_id)
-            if not complete_order(order_id):
-                add_to_balance(user_internal_id, actual_deduct)
-                logger.warning('complete_order не обновил статус для balance order %s', order_id)
-                await callback.answer('❌ Ошибка завершения оплаты. Средства возвращены на баланс.', show_alert=True)
-                return
         except Exception:
             logger.exception('Ошибка выдачи ключа при оплате балансом, order=%s', order_id)
             if deducted:
                 add_to_balance(user_internal_id, actual_deduct)
-            elif key_id and prev_expires:
-                from database.connection import get_db
+            if key_id and prev_expires:
                 with get_db() as conn:
                     conn.execute(
                         "UPDATE vpn_keys SET expires_at = ? WHERE id = ?",
                         (prev_expires, key_id)
                     )
-            await callback.answer('❌ Ошибка выдачи ключа. Обратитесь в поддержку.', show_alert=True)
+            if new_key_id and not key_id:
+                try:
+                    delete_vpn_key(new_key_id)
+                except Exception:
+                    logger.exception('Не удалось удалить draft key %s после rollback', new_key_id)
+            # Ордер уже paid — помечаем fulfilled, иначе retry выдаст дни после refund.
+            try:
+                mark_order_fulfilled(order_id)
+            except Exception:
+                pass
+            await callback.answer('❌ Ошибка выдачи ключа. Средства возвращены на баланс.', show_alert=True)
             return
+
+    # Панель — вне lock (не блокируем баланс при таймауте панели)
+    if key_id and granted:
+        try:
+            await push_key_to_panel(key_id, reset_traffic=True)
+        except Exception as e:
+            logger.warning(f'balance renew panel sync key={key_id}: {e}')
+
     await state.update_data(balance_to_deduct=0)
 
     def format_price_compact(cents: int) -> str:
@@ -249,9 +300,8 @@ async def pay_with_balance_handler(callback: CallbackQuery, state: FSMContext):
         else:
             return f'{cents / 100:.2f} ₽'.replace('.', ',')
     price_str = format_price_compact(actual_deduct)
-    
+
     if key_id:
-        # Продление — ключ уже на сервере, просто сообщаем
         await safe_edit_or_send(callback.message, f'✅ <b>Оплата успешно завершена!</b>\n\nС вашего баланса списано {price_str}\nКлюч продлён на {days} дн.', reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text='🈴 На главную', callback_data='start')).as_markup())
     else:
         from bot.handlers.user.payments.base import finalize_payment_ui
@@ -268,7 +318,7 @@ async def pay_card_balance_handler(callback: CallbackQuery, state: FSMContext):
     Создаёт инвойс на remaining_cents (не на полную цену тарифа!)
     """
     from aiogram.types import LabeledPrice
-    from database.requests import get_tariff_by_id, get_user_internal_id, get_user_balance, create_pending_order_from_tariff, get_setting
+    from database.requests import get_tariff_by_id, get_user_internal_id, get_user_balance, create_pending_order_from_tariff, get_setting, get_key_details_for_user
     from bot.services.billing import get_discounted_tariff
     from aiogram.exceptions import TelegramBadRequest
     data = await state.get_data()
@@ -284,6 +334,12 @@ async def pay_card_balance_handler(callback: CallbackQuery, state: FSMContext):
     if not tariff_id:
         await callback.answer('❌ Ошибка: тариф не определён', show_alert=True)
         return
+    telegram_id = callback.from_user.id
+    owned = _resolve_owned_key_id(key_id, telegram_id)
+    if owned is False:
+        await callback.answer('❌ Ключ не найден', show_alert=True)
+        return
+    key_id = owned
     tariff = get_tariff_by_id(tariff_id)
     if not tariff:
         await callback.answer('❌ Тариф не найден', show_alert=True)
@@ -292,10 +348,15 @@ async def pay_card_balance_handler(callback: CallbackQuery, state: FSMContext):
     if not provider_token:
         await callback.answer('❌ Провайдер платежей не настроен', show_alert=True)
         return
-    user_id = get_user_internal_id(callback.from_user.id)
+    user_id = get_user_internal_id(telegram_id)
     if not user_id:
         await callback.answer('❌ Ошибка пользователя', show_alert=True)
         return
+    if key_id:
+        key = get_key_details_for_user(key_id, telegram_id)
+        if not key or not _tariff_allowed_for_renew(key, tariff_id):
+            await callback.answer('❌ Тариф недоступен для этого ключа', show_alert=True)
+            return
     tariff = get_discounted_tariff(user_id, tariff)
     if not tariff_price_cents:
         tariff_price_cents = int(tariff.get('price_rub', 0) * 100)
@@ -357,7 +418,10 @@ async def pay_qr_balance_handler(callback: CallbackQuery, state: FSMContext):
     Берёт данные из FSM state: balance_to_deduct, remaining_cents, tariff_id, key_id
     Создаёт инвойс на remaining_cents / 100 рублей (ЮKassa принимает рубли)
     """
-    from database.requests import get_tariff_by_id, get_user_internal_id, get_user_balance, create_pending_order_from_tariff, save_yookassa_payment_id
+    from database.requests import (
+        get_tariff_by_id, get_user_internal_id, get_user_balance,
+        create_pending_order_from_tariff, save_yookassa_payment_id, get_key_details_for_user,
+    )
     from bot.services.billing import create_yookassa_qr_payment, get_discounted_tariff
     from bot.keyboards.user import yookassa_qr_kb
     from bot.keyboards.admin import home_only_kb
@@ -375,14 +439,25 @@ async def pay_qr_balance_handler(callback: CallbackQuery, state: FSMContext):
     if not tariff_id:
         await callback.answer('❌ Ошибка: тариф не определён', show_alert=True)
         return
+    telegram_id = callback.from_user.id
+    owned = _resolve_owned_key_id(key_id, telegram_id)
+    if owned is False:
+        await callback.answer('❌ Ключ не найден', show_alert=True)
+        return
+    key_id = owned
     tariff = get_tariff_by_id(tariff_id)
     if not tariff:
         await callback.answer('❌ Тариф не найден', show_alert=True)
         return
-    user_id = get_user_internal_id(callback.from_user.id)
+    user_id = get_user_internal_id(telegram_id)
     if not user_id:
         await callback.answer('❌ Пользователь не найден', show_alert=True)
         return
+    if key_id:
+        key = get_key_details_for_user(key_id, telegram_id)
+        if not key or not _tariff_allowed_for_renew(key, tariff_id):
+            await callback.answer('❌ Тариф недоступен для этого ключа', show_alert=True)
+            return
     tariff = get_discounted_tariff(user_id, tariff)
     if not tariff_price_cents:
         tariff_price_cents = int(tariff.get('price_rub', 0) * 100)

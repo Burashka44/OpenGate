@@ -674,6 +674,10 @@ def update_key_custom_name(key_id: int, telegram_id: int, new_name: str) -> bool
     if new_name and len(new_name) > 30:
         logger.warning(f"Попытка установить слишком длинное имя ключа {key_id}: {new_name}")
         return False
+    # Запрет HTML/управляющих символов в имени (defense-in-depth к /sub XSS)
+    if new_name and any(c in new_name for c in "<>\"'`"):
+        logger.warning(f"Попытка установить имя ключа с запрещёнными символами {key_id}")
+        return False
 
     key = get_key_details_for_user(key_id, telegram_id)
     if not key:
@@ -755,7 +759,8 @@ def ensure_page_token(key_id: int) -> Optional[str]:
             return None
         if row['page_token']:
             return row['page_token']
-        token = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24))
+        # urlsafe ~43 символа энтропии; старые 24-символьные токены остаются валидными
+        token = secrets.token_urlsafe(32)
         conn.execute("UPDATE vpn_keys SET page_token = ? WHERE id = ?", (token, key_id))
         return token
 
@@ -833,7 +838,7 @@ def mark_link_reset(key_id: int, new_page_token: Optional[str] = None) -> None:
 
 
 def set_key_access_password(key_id: int, password: str) -> None:
-    """Сохраняет пароль доступа (naive/mieru)."""
+    """Сохраняет пароль доступа (legacy; для 3x/LucX обычно не используется)."""
     with get_db() as conn:
         conn.execute(
             "UPDATE vpn_keys SET access_password = ? WHERE id = ?",

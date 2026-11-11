@@ -38,6 +38,9 @@ __all__ = [
     'update_payment_key_id',
     'is_order_already_paid',
     'mark_order_fulfilled',
+    'claim_order_fulfillment',
+    'release_order_fulfillment',
+    'get_unfulfilled_paid_orders',
     'mark_referral_paid',
     'mark_user_notified',
     'claim_balance_to_deduct',
@@ -735,6 +738,58 @@ def mark_order_fulfilled(order_id: str) -> None:
             "UPDATE payments SET fulfilled_at = CURRENT_TIMESTAMP WHERE order_id = ?",
             (order_id,)
         )
+
+
+def claim_order_fulfillment(order_id: str) -> bool:
+    """
+    Атомарно захватывает выдачу ордера.
+    True = этот поток должен выполнить extend/create; False = уже выдано.
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE payments
+            SET fulfilled_at = CURRENT_TIMESTAMP
+            WHERE order_id = ? AND status = 'paid' AND fulfilled_at IS NULL
+            """,
+            (order_id,),
+        )
+        return cursor.rowcount > 0
+
+
+def release_order_fulfillment(order_id: str) -> None:
+    """Снимает claim выдачи, чтобы retry мог повторить extend/create."""
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE payments
+            SET fulfilled_at = NULL
+            WHERE order_id = ? AND status = 'paid' AND fulfilled_at IS NOT NULL
+            """,
+            (order_id,),
+        )
+
+
+def get_unfulfilled_paid_orders(limit: int = 20) -> list:
+    """
+    Paid-ордера без fulfilled_at (выдача оборвалась после complete_order).
+    Не трогает topup старше 7 дней без vpn_key — только свежие сбои.
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            SELECT * FROM payments
+            WHERE status = 'paid'
+              AND fulfilled_at IS NULL
+              AND (purpose IS NULL OR purpose != 'topup')
+              AND paid_at IS NOT NULL
+              AND datetime(paid_at) > datetime('now', '-7 days')
+            ORDER BY paid_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in cursor.fetchall()]
 
 
 def mark_referral_paid(order_id: str) -> bool:

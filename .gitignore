@@ -5,6 +5,7 @@
 # Explicitly ignore these (redundant due to * but good for clarity/overrides if I change * later)
 config.py
 logs/
+*.log
 docs/
 results.md
 AGENTS.md
@@ -15,9 +16,14 @@ tmp/
 
 # База данных (создаётся автоматически при запуске)
 database/vpn_bot.db
+database/*.db
+database/*.db-*
 
 # Локальные бэкапы (создаются автоматически планировщиком)
 backup/
+
+# Секреты runtime (systemd EnvironmentFile)
+opengate.env
 
 # Virtual Environment
 venv/

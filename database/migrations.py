@@ -34,7 +34,7 @@ def _add_column(conn: sqlite3.Connection, table: str, column_def: str) -> None:
 INITIAL_VERSION = 21
 
 # Текущая версия схемы БД (инкрементируется при добавлении новых миграций)
-LATEST_VERSION = 37
+LATEST_VERSION = 38
 
 
 def get_current_version() -> int:
@@ -853,14 +853,14 @@ def migration_30(conn):
     """
     Миграция v30: фундамент для веб-сервера, мульти-панелей и retention-фич.
 
-    - servers.panel_type — тип панели: 'xui' | 'marzban' | 'naive' | 'mieru'
+    - servers.panel_type — тип панели: 'xui' | 'lucx' (исторически также marzban/naive/mieru)
     - servers.weight — вес для least-load выбора сервера
-    - servers.public_host — адрес для клиентских конфигов (naive/mieru)
+    - servers.public_host — опциональный публичный хост (legacy)
     - servers.extra_config — JSON c панель-специфичными настройками
-    - tariffs.protocol_family — 'xray' | 'naive' | 'mieru' (фильтрация серверов)
+    - tariffs.protocol_family — 'xray' (legacy naive/mieru сняты)
     - vpn_keys.page_token — токен subscription page (/sub/{token})
     - vpn_keys.auto_renew — автопродление с баланса
-    - vpn_keys.access_password — пароль пользователя для naive/mieru
+    - vpn_keys.access_password — legacy пароль доступа
     - vpn_keys.link_reset_at — последний сброс ссылки (cooldown)
     - payments.fulfilled_at — момент фактической выдачи (диагностика)
     - payments.purpose — 'purchase' | 'topup' (пополнение баланса)
@@ -1154,6 +1154,33 @@ def migration_37(conn: sqlite3.Connection) -> None:
     logger.info("Миграция v37 применена: help без сторонних ссылок")
 
 
+def migration_38(conn: sqlite3.Connection) -> None:
+    """
+    v38: reliability — claimed_at для webhook_outbox; дедуп promo_activations
+    без жёсткого UNIQUE(promo_id, user_id), т.к. per_user_limit может быть > 1.
+    """
+    _add_column(conn, "webhook_outbox", "claimed_at DATETIME")
+    # Исторические дубли при per_user_limit=1: оставляем минимальный id в каждой группе
+    # сверх лимита 1 — чистим только явные полные дубликаты одной секунды не трогаем
+    # (безопасный минимум: одинаковые promo_id+user_id+activated_at).
+    conn.execute("""
+        DELETE FROM promo_activations
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM promo_activations
+            GROUP BY promo_id, user_id, COALESCE(activated_at, '')
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_promo_activations_promo_user "
+        "ON promo_activations(promo_id, user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_webhook_outbox_processing "
+        "ON webhook_outbox(status, claimed_at)"
+    )
+    logger.info("Миграция v38 применена: outbox claimed_at + promo index")
+
+
 MIGRATIONS = {
     22: migration_22,
     23: migration_23,
@@ -1171,6 +1198,7 @@ MIGRATIONS = {
     35: migration_35,
     36: migration_36,
     37: migration_37,
+    38: migration_38,
 }
 
 

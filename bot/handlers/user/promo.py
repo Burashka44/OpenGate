@@ -40,6 +40,8 @@ async def _activate_and_reply(message: Message, user_db_id: int, code: str, edit
     """Активирует код и отправляет результат пользователю."""
     from bot.services.billing import apply_promo_effect
 
+    # activate_promo сериализует себя через BEGIN IMMEDIATE;
+    # apply_promo_effect сам берёт user_locks для balance (не оборачивать снаружи — Lock не reentrant).
     (ok, msg, promo) = activate_promo(code, user_db_id)
     if ok and promo:
         msg = await apply_promo_effect(user_db_id, promo)

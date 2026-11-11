@@ -11,7 +11,7 @@ class VPNAPIError(Exception):
 class BaseVPNClient(abc.ABC):
     """Базовый клиент для работы с VPN-панелями."""
 
-    # False для Marzban/Naive/mieru — пропускаем UX выбора inbound
+    # False — пропускаем UX выбора inbound (subscription / user-centric панели)
     supports_inbound_select: bool = True
 
     def __init__(self, server: dict):

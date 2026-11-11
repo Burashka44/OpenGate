@@ -195,15 +195,25 @@ async def process_payment_order(order_id: str) -> Tuple[bool, str, Optional[Dict
     user_internal_id = order['user_id']
     days = order.get('period_days') or order.get('duration_days') or 30
 
+    from database.requests import (
+        claim_order_fulfillment, release_order_fulfillment, consume_user_discount,
+    )
+
     # --- Пополнение баланса (purpose='topup') ---
     if order.get('purpose') == 'topup':
-        from database.requests import add_to_balance, mark_order_fulfilled
+        from database.requests import add_to_balance
         from bot.services.user_locks import user_locks
+        if not claim_order_fulfillment(order_id):
+            fresh = find_order_by_order_id(order_id)
+            return True, "✅ Этот платёж уже был обработан ранее.", fresh
         amount = order.get('amount_cents', 0) or 0
-        if amount > 0:
-            async with user_locks[user_internal_id]:
-                add_to_balance(user_internal_id, amount)
-        mark_order_fulfilled(order_id)
+        try:
+            if amount > 0:
+                async with user_locks[user_internal_id]:
+                    add_to_balance(user_internal_id, amount)
+        except Exception:
+            release_order_fulfillment(order_id)
+            raise
         logger.info(f"Topup order {order_id}: +{amount} коп на баланс user {user_internal_id}")
         return True, (
             f"✅ Оплата прошла успешно!\n\n"
@@ -211,65 +221,72 @@ async def process_payment_order(order_id: str) -> Tuple[bool, str, Optional[Dict
         ), order
 
     if order['vpn_key_id']:
+        if not claim_order_fulfillment(order_id):
+            fresh = find_order_by_order_id(order_id)
+            return True, "✅ Этот платёж уже был обработан ранее.", fresh
         if days and extend_vpn_key(order['vpn_key_id'], days):
             logger.info(f"Ключ {order['vpn_key_id']} продлён на {days} дней (order={order_id})")
-            
+            consume_user_discount(user_internal_id)
+
             from bot.services.vpn_api import (
                 push_key_to_panel, restore_traffic_limit_in_db,
                 ensure_subscription_keys_on_server,
             )
             from database.requests import get_vpn_key_by_id
-            # Восстанавливаем лимит трафика в БД (без обращения к панели)
-            restore_traffic_limit_in_db(order['vpn_key_id'])
-            # Пушим ВСЕ данные из БД на панель одним вызовом (сброс up/down + обновление)
-            await push_key_to_panel(order['vpn_key_id'], reset_traffic=True)
-            # Subscription: зеркалим обновлённые totalGB/expiryTime/enable на все inbound
-            _renewed_key = get_vpn_key_by_id(order['vpn_key_id'])
-            if _renewed_key and _renewed_key.get('sub_id'):
-                try:
+            try:
+                restore_traffic_limit_in_db(order['vpn_key_id'])
+                await push_key_to_panel(order['vpn_key_id'], reset_traffic=True)
+                _renewed_key = get_vpn_key_by_id(order['vpn_key_id'])
+                if _renewed_key and _renewed_key.get('sub_id'):
                     await ensure_subscription_keys_on_server(order['vpn_key_id'])
-                except Exception as _e:
-                    logger.warning(
-                        f"renew: ensure_subscription_keys_on_server({order['vpn_key_id']}) "
-                        f"не удался: {_e}"
-                    )
+            except Exception as _e:
+                logger.warning(
+                    f"renew: panel sync order={order_id} key={order['vpn_key_id']}: {_e}"
+                )
 
-            # Рефералка — через pay_referral_once (check/webhook), не здесь
-            from database.requests import mark_order_fulfilled, consume_user_discount
-            mark_order_fulfilled(order_id)
-            consume_user_discount(user_internal_id)
             return True, f"✅ Оплата прошла успешно!\n\nВаш ключ продлён на {days} дней.", order
-        else:
-            logger.error(f"Не удалось продлить ключ {order['vpn_key_id']} после оплаты!")
-            return True, "✅ Оплата принята!\n\n⚠️ Возникла проблема с продлением. Мы разберёмся.", order
+
+        release_order_fulfillment(order_id)
+        logger.critical(
+            "FULFILL_FAIL order=%s extend vpn_key_id=%s",
+            order_id, order['vpn_key_id'],
+        )
+        return False, (
+            "✅ Оплата получена, но продление ключа не завершено. "
+            "Мы уже разбираемся — напишите в поддержку, если ключ не обновится."
+        ), order
     else:
         if not order.get('tariff_id'):
             logger.error(f"Ордер {order_id}: тариф не найден или неактивен в БД (received tariff_id could not be resolved).")
             from bot.errors import TariffNotFoundError
             raise TariffNotFoundError()
-        
+
+        if not claim_order_fulfillment(order_id):
+            fresh = find_order_by_order_id(order_id)
+            return True, "✅ Этот платёж уже был обработан ранее.", fresh
+
         try:
             days = order.get('period_days') or order.get('duration_days') or 30
-            # Получаем лимит трафика из тарифа
             from database.requests import get_tariff_by_id as _get_tariff
             _tariff = _get_tariff(order['tariff_id'])
             traffic_limit_bytes = (_tariff.get('traffic_limit_gb', 0) or 0) * (1024**3) if _tariff else 0
             key_id = create_initial_vpn_key(order['user_id'], order['tariff_id'], days, traffic_limit=traffic_limit_bytes)
-            
+
             update_payment_key_id(order_id, key_id)
             order['vpn_key_id'] = key_id
-            
+
             logger.info(f"Создан черновик ключа {key_id} для заказа {order_id}")
-            
-            # Рефералка — через pay_referral_once (check/webhook), не здесь
-            from database.requests import mark_order_fulfilled, consume_user_discount
-            mark_order_fulfilled(order_id)
+
             consume_user_discount(user_internal_id)
             return True, "✅ Оплата прошла успешно!", order
-            
+
         except Exception as e:
-            logger.error(f"Ошибка создания черновика ключа: {e}")
-            return True, "✅ Оплата принята, но произошла ошибка при создании ключа. Обратитесь в поддержку.", order
+            release_order_fulfillment(order_id)
+            logger.critical("FULFILL_FAIL order=%s create key: %s", order_id, e)
+            return False, (
+                "✅ Оплата получена, но ключ не создан автоматически. "
+                "Напишите в поддержку — выдадим вручную."
+            ), order
 
 
 async def fulfill_paid_order(order_id: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:

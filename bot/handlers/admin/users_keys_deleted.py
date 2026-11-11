@@ -9,7 +9,7 @@ from aiogram import Router, F, BaseMiddleware
 from aiogram.types import CallbackQuery, TelegramObject
 
 from bot.utils.admin import is_admin
-from bot.utils.text import safe_edit_or_send
+from bot.utils.text import safe_edit_or_send, escape_html
 from bot.keyboards.admin_users import (
     key_delete_confirm_kb,
     sync_deleted_menu_kb,
@@ -114,7 +114,7 @@ async def on_key_delete_confirm(callback: CallbackQuery):
             keys = get_user_vpn_keys(user['id'])
             await safe_edit_or_send(
                 callback.message,
-                f"👤 Профиль пользователя: <b>{user.get('username', 'Нет')}</b> (ID: <code>{user['telegram_id']}</code>)",
+                f"👤 Профиль пользователя: <b>{escape_html(user.get('username') or 'Нет')}</b> (ID: <code>{user['telegram_id']}</code>)",
                 reply_markup=user_view_kb(
                     user['telegram_id'],
                     keys,

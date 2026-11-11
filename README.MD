@@ -58,10 +58,8 @@ OpenGate превращает Telegram-бота в полноценный маг
 
 ### VPN-панели
 
-- **3x-UI** — основной путь: покупка, продление, subscription-режим, синхронизация трафика
-- **Marzban** — user-centric REST, `subscription_url`, push срока и лимита
-- **Naive** — Caddy Admin API или SSH-merge `users.conf`
-- **mieru** — частичный апдейт users JSON + `mita apply` (без затирания)
+- **3x-UI** — покупка, продление, **subscription-режим**: пользователь получает ссылку подписки панели
+- **LucX** — тот же API, что 3x-UI; в подписке дополнительно протоколы панели (mieru, AWG, Hy2, …)
 
 ### Продажи и маркетинг
 
@@ -163,7 +161,7 @@ Telegram ──> aiogram 3 (polling) ──> SQLite (WAL, автомиграци
                   │                        │
                   │                        └─> ключи, платежи, промо, рефералка
                   ├─> платёжные API ──> подтверждение ──> выдача ключа
-                  ├─> VPN-панель (3x-UI / Marzban / Naive / mieru)
+                  ├─> VPN-панель (3x-UI / LucX)
                   └─> aiohttp: /sub, вебхуки, /healthz
 ```
 

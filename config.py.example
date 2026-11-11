@@ -2,7 +2,7 @@ import os
 
 # Telegram Bot API Token (env BOT_TOKEN имеет приоритет над значением ниже)
 # Получите у @BotFather
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА").strip()
 
 # Список Telegram ID администраторов (env ADMIN_IDS — через запятую, например "123,456")
 _admin_ids_env = os.environ.get("ADMIN_IDS", "").strip()
@@ -19,7 +19,19 @@ else:
 
 # Ссылка на GitHub репозиторий для автообновления
 # Формат: https://github.com/username/repo.git или git@github.com:username/repo.git
-GITHUB_REPO_URL = "https://github.com/Burashka44/OpenGate.git"  # URL вашего репозитория для автообновления
+GITHUB_REPO_URL = os.environ.get(
+    "GITHUB_REPO_URL",
+    "https://github.com/Burashka44/OpenGate.git",
+).strip()
+
+# Разрешить опасный git reset --hard из админки (по умолчанию выкл.)
+ALLOW_FORCE_GIT_RESET = os.environ.get("ALLOW_FORCE_GIT_RESET", "0").strip() in ("1", "true", "yes")
+
+# В проде: требовать Redis FSM
+REQUIRE_REDIS_FSM = os.environ.get("REQUIRE_REDIS_FSM", "0").strip() in ("1", "true", "yes")
+
+# Bind веб-сервера (127.0.0.1 за nginx; 0.0.0.0 только если нет proxy)
+WEB_BIND_HOST = os.environ.get("WEB_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
 # Client Configuration Defaults
 DEFAULT_LIMIT_IP = 1  # Ограничение кол-ва одновременных подключений (1 ключ = 1 устройство)
@@ -36,3 +48,17 @@ RETRY_CONFIG = {
     "max_attempts": 3,      # Максимальное количество попыток
     "delays": [1, 3, 9],    # Задержки между попытками в секундах (экспоненциальная)
 }
+
+FSM_STATE_TTL_SECONDS = int(os.environ.get("FSM_STATE_TTL_SECONDS", "1800"))
+
+
+def validate_runtime_config() -> None:
+    token = (BOT_TOKEN or "").strip()
+    if not token or token.startswith("ВАШ_") or token == "123456:REPLACE_WITH_REAL_TOKEN":
+        raise SystemExit(
+            "BOT_TOKEN не задан. Укажите env BOT_TOKEN или значение в config.py"
+        )
+    if not ADMIN_IDS:
+        raise SystemExit(
+            "ADMIN_IDS пуст. Укажите env ADMIN_IDS или список в config.py"
+        )

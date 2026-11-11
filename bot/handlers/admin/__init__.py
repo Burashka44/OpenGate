@@ -1,8 +1,13 @@
 """
 Подключение роутеров админ-панели.
 """
-from aiogram import Router
+from typing import Optional
 
+from aiogram import Router
+from aiogram.filters import BaseFilter
+from aiogram.types import TelegramObject, User
+
+from bot.utils.admin import is_admin
 from bot.handlers.admin.main import router as main_router
 from bot.handlers.admin.message_editor import router as message_editor_router
 from bot.handlers.admin.servers import router as servers_router
@@ -20,7 +25,21 @@ from bot.handlers.admin.groups import router as groups_router
 from bot.handlers.admin.promos import router as promos_router
 from bot.handlers.admin.ops import router as ops_router
 
+
+class AdminFilter(BaseFilter):
+    """Глобальный фильтр: только ADMIN_IDS."""
+
+    async def __call__(
+        self,
+        event: TelegramObject,
+        event_from_user: Optional[User] = None,
+    ) -> bool:
+        return bool(event_from_user and is_admin(event_from_user.id))
+
+
 admin_router = Router()
+admin_router.message.filter(AdminFilter())
+admin_router.callback_query.filter(AdminFilter())
 
 admin_router.include_router(main_router)
 admin_router.include_router(message_editor_router)
@@ -38,4 +57,3 @@ admin_router.include_router(trial_router)
 admin_router.include_router(referral_router)
 admin_router.include_router(promos_router)
 admin_router.include_router(ops_router)
-

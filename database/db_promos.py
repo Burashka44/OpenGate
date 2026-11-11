@@ -125,47 +125,58 @@ def activate_promo(code: str, user_id: int) -> Tuple[bool, str, Optional[Dict[st
     """
     Валидирует и активирует промокод для пользователя.
 
-    Атомарно: инкремент used_count с проверкой лимита в одном UPDATE,
-    затем запись активации. Применение эффекта — на вызывающей стороне
-    (bot.services.billing.apply_promo_effect).
+    BEGIN IMMEDIATE сериализует COUNT(per_user_limit) + UPDATE used_count + INSERT.
+    UNIQUE на (promo_id, user_id) не ставим: per_user_limit может быть > 1.
+    Применение эффекта — на вызывающей стороне (apply_promo_effect).
 
     Returns:
         (success, message, promo_dict)
     """
+    from database.connection import get_connection
+
     promo = get_promo_by_code(code)
     if not promo or not promo['is_active']:
         return False, "❌ Промокод не найден или отключён.", None
 
-    with get_db() as conn:
-        # Истечение по дате
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute("""
             SELECT 1 FROM promo_codes
-            WHERE id = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
+            WHERE id = ? AND is_active = 1
+              AND (expires_at IS NULL OR expires_at > datetime('now'))
         """, (promo['id'],))
         if not cursor.fetchone():
+            conn.rollback()
             return False, "❌ Срок действия промокода истёк.", None
 
-        # Лимит на пользователя
         cursor = conn.execute(
             "SELECT COUNT(*) as cnt FROM promo_activations WHERE promo_id = ? AND user_id = ?",
             (promo['id'], user_id)
         )
         if cursor.fetchone()['cnt'] >= (promo['per_user_limit'] or 1):
+            conn.rollback()
             return False, "❌ Вы уже использовали этот промокод.", None
 
-        # Атомарный инкремент с проверкой общего лимита
         cursor = conn.execute("""
             UPDATE promo_codes
             SET used_count = used_count + 1
             WHERE id = ? AND (max_uses = 0 OR used_count < max_uses)
         """, (promo['id'],))
         if cursor.rowcount == 0:
+            conn.rollback()
             return False, "❌ Лимит активаций промокода исчерпан.", None
 
         conn.execute(
             "INSERT INTO promo_activations (promo_id, user_id) VALUES (?, ?)",
             (promo['id'], user_id)
         )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     logger.info(f"Промокод {promo['code']} активирован пользователем {user_id}")
     return True, "", promo
